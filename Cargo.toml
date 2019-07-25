@@ -10,18 +10,17 @@ arrayvec = "0.4.10"
 nalgebra = "0.18.0"
 graphics_buffer = "0.5.6"
 piston2d-graphics = "0.30.0"
+rand = "0.6.5"
 
 [dependencies.arcstar]
-git = "https://github.com/tstellanova/arcstar"
-
-
+path = "../arcstar"
+#git = "https://github.com/tstellanova/arcstar"
 
 
 [dev-dependencies]
 #quickcheck = "0.6"
 assert_approx_eq = "1.1.0"
 criterion = "0.2"
-rand = "0.6.5"
 
 
 
