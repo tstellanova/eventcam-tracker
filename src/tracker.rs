@@ -1,16 +1,22 @@
-
+use rayon::prelude::*;
 
 
 use arcstar::sae_types::*;
+use arcstar::detector;
 
-use graphics_buffer::*;
 
-use rand;
+use graphics_buffer::{RenderBuffer, IDENTITY};
+use image::{ RgbImage };
 
 use crate::slab::{SlabStore};
 
 pub struct FeatureTracker {
-    store: SlabStore,
+  n_pixel_rows: u32,
+  n_pixel_cols: u32,
+  store: SlabStore,
+  sae_rise: SaeMatrix,
+  sae_fall: SaeMatrix,
+
 }
 
 impl FeatureTracker {
@@ -30,10 +36,43 @@ impl FeatureTracker {
     [255, 0, 127],
   ];
 
-  pub fn new() -> FeatureTracker {
+  pub fn new(img_w: u32, img_h: u32) -> FeatureTracker {
     FeatureTracker {
+      n_pixel_cols: img_w,
+      n_pixel_rows: img_h,
       store: SlabStore::new(),
+      sae_rise: SaeMatrix::zeros(img_h as usize, img_w as usize),
+      sae_fall: SaeMatrix::zeros(img_h as usize, img_w as usize),
     }
+  }
+
+  pub fn process_events(&mut self, event_list: &Vec<SaeEvent>) -> Vec<(SaeEvent, SaeEvent)>  {
+    //update the SAE first //TODO handle one event at at a time?
+    for evt in event_list {
+      let row = evt.row as usize;
+      let col = evt.col  as usize;
+      match evt.polarity {
+        1 => self.sae_rise[(row, col)] = evt.timestamp,
+        _ => self.sae_fall[(row, col)] = evt.timestamp,
+      };
+    }
+
+    // we can check corners in parallel because SAE has already been updated,
+    // and can now be considered read-only
+    let corners:Vec<SaeEvent> = event_list.par_iter().filter_map(|evt| {
+      detector::detect_and_compute_one(&self.sae_rise, &self.sae_fall, evt)
+    }).collect();
+
+    let matches:Vec<(SaeEvent, SaeEvent)> = corners.iter().filter_map(|new_evt: &SaeEvent| {
+      let matched_parent = self.add_and_match_feature(&new_evt);
+      match matched_parent.is_some() {
+        true => Some( (new_evt.clone(), matched_parent.unwrap()) ),
+        false => None
+      }
+    }).collect();
+
+    println!("events: {} corners: {} matches: {}", event_list.len(), corners.len(), matches.len() );
+    matches
   }
 
   pub fn add_and_match_feature(&mut self, new_evt: &SaeEvent) -> Option<SaeEvent> {
@@ -43,7 +82,6 @@ impl FeatureTracker {
       None => None
     }
   }
-
 
   fn render_track(segments: &Vec<[f64; 4]>, buffer: &mut RenderBuffer, color_hint: usize) {
     for seg in segments {
@@ -101,9 +139,10 @@ impl FeatureTracker {
           }
           acc.push(chain_vec);
 
-          //if 0 == total_dist_y {
-          //  println!("total_dist xy: {}, {}", total_dist_x, total_dist_y);
-          //}
+          if 0 == total_dist_y {
+            //TODO
+            eprintln!("total_dist xy: {}, {}", total_dist_x, total_dist_y);
+          }
         }
       }
       acc
@@ -116,6 +155,33 @@ impl FeatureTracker {
 
 
     buffer.save(out_path).expect("Couldn't save");
+  }
+
+
+  /// Render a representation of the SAE with the given cutoff time horizon
+  pub fn render_sae_frame(&self,  time_horizon: SaeTime ) -> RgbImage {
+    let mut out_img =   RgbImage::new(self.n_pixel_cols, self.n_pixel_rows);
+
+    for row in 0..self.n_pixel_rows {
+      for col in 0..self.n_pixel_cols {
+        let sae_rise_val: SaeTime = self.sae_rise[(row as usize, col as usize)] ;
+        let sae_fall_val: SaeTime = self.sae_fall[(row as usize, col as usize)] ;
+        let sae_val = sae_rise_val.max(sae_fall_val);
+        if 0 != sae_val && sae_val > time_horizon {
+          let blue_val = 0;
+          let total_val = (sae_fall_val + sae_rise_val) as f32;
+          let red_val: u8 = (255.0*(sae_rise_val as f32)/total_val) as u8;
+          let green_val: u8 = (255.0*(sae_fall_val as f32)/total_val) as u8;
+
+          let px_data: [u8; 3] = [red_val, green_val, blue_val];
+          let px =  image::Rgb(px_data);
+
+          out_img.put_pixel(col as u32, row as u32, px);
+        }
+      }
+    }
+
+    out_img
   }
 
 
