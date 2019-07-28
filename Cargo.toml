@@ -13,7 +13,7 @@ piston2d-graphics = "0.30.0"
 imageproc = "0.18.0"
 image = "0.21.1"
 rand = "0.6.5"
-rayon = "1.1.0"
+#rayon = "1.1.0"
 
 
 [dependencies.arcstar]
@@ -22,9 +22,8 @@ git = "https://github.com/tstellanova/arcstar"
 
 
 [dev-dependencies]
-#quickcheck = "0.6"
-assert_approx_eq = "1.1.0"
-criterion = "0.2"
+#assert_approx_eq = "1.1.0"
+#criterion = "0.2"
 
 
 

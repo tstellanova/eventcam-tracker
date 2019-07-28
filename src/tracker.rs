@@ -1,5 +1,3 @@
-use rayon::prelude::*;
-
 
 use arcstar::sae_types::*;
 use arcstar::detector;
@@ -16,7 +14,8 @@ pub struct FeatureTracker {
   store: SlabStore,
   sae_rise: SaeMatrix,
   sae_fall: SaeMatrix,
-
+  ///related to tmax from ACE paper
+  time_window: SaeTime,
 }
 
 impl FeatureTracker {
@@ -36,47 +35,49 @@ impl FeatureTracker {
     [255, 0, 127],
   ];
 
-  pub fn new(img_w: u32, img_h: u32) -> FeatureTracker {
+  pub fn new(img_w: u32, img_h: u32, time_window: SaeTime) -> FeatureTracker {
     FeatureTracker {
       n_pixel_cols: img_w,
       n_pixel_rows: img_h,
       store: SlabStore::new(),
       sae_rise: SaeMatrix::zeros(img_h as usize, img_w as usize),
       sae_fall: SaeMatrix::zeros(img_h as usize, img_w as usize),
+      time_window: time_window,
     }
   }
 
-  pub fn process_events(&mut self, event_list: &Vec<SaeEvent>) -> Vec<(SaeEvent, SaeEvent)>  {
-    //update the SAE first //TODO handle one event at at a time?
-    for evt in event_list {
-      let row = evt.row as usize;
-      let col = evt.col  as usize;
-      match evt.polarity {
-        1 => self.sae_rise[(row, col)] = evt.timestamp,
-        _ => self.sae_fall[(row, col)] = evt.timestamp,
-      };
+
+  pub fn process_one_event(&mut self, evt: &SaeEvent) -> Option<SaeEvent> {
+    let row = evt.row as usize;
+    let col = evt.col  as usize;
+
+    let sae_pol =  match evt.polarity {
+      1 => &mut self.sae_rise,
+      _ => &mut self.sae_fall,
+    };
+
+    sae_pol[(row, col)] = evt.timestamp;
+    let feature =  detector::detect_and_compute_one(sae_pol, evt);
+
+    if feature.is_some() {
+      let new_evt = feature.clone().unwrap();
+      let time_horizon: SaeTime = new_evt.timestamp.max(self.time_window) - self.time_window;
+      self.add_and_match_feature(&new_evt, time_horizon);
     }
 
-    // we can check corners in parallel because SAE has already been updated,
-    // and can now be considered read-only
-    let corners:Vec<SaeEvent> = event_list.par_iter().filter_map(|evt| {
-      detector::detect_and_compute_one(&self.sae_rise, &self.sae_fall, evt)
-    }).collect();
-
-    let matches:Vec<(SaeEvent, SaeEvent)> = corners.iter().filter_map(|new_evt: &SaeEvent| {
-      let matched_parent = self.add_and_match_feature(&new_evt);
-      match matched_parent.is_some() {
-        true => Some( (new_evt.clone(), matched_parent.unwrap()) ),
-        false => None
-      }
-    }).collect();
-
-    println!("events: {} corners: {} matches: {}", event_list.len(), corners.len(), matches.len() );
-    matches
+    feature
   }
 
-  pub fn add_and_match_feature(&mut self, new_evt: &SaeEvent) -> Option<SaeEvent> {
-    let res = self.store.add_and_match_feature(new_evt);
+  pub fn process_events(&mut self, event_list: &Vec<SaeEvent>) -> Vec<SaeEvent>  {
+    let corners: Vec<SaeEvent> = event_list.iter().filter_map(|evt| {
+      self.process_one_event(evt)
+    }).collect();
+
+    corners
+  }
+
+  pub fn add_and_match_feature(&mut self, new_evt: &SaeEvent, time_horizon: SaeTime) -> Option<SaeEvent> {
+    let res = self.store.add_and_match_feature(new_evt, time_horizon);
     match res {
       Some(feat) => Some(feat.event),
       None => None
@@ -109,7 +110,10 @@ impl FeatureTracker {
 
 
   /// Render lines for all the valid tracks to the given file path
-  pub fn render_tracks_to_file(&self, nrows: u32, ncols: u32, lead_time_horizon: SaeTime, out_path: &str) {
+  pub fn render_tracks_to_file(&self, lead_time_horizon: SaeTime, out_path: &str) {
+    let nrows = self.n_pixel_rows;
+    let ncols = self.n_pixel_cols;
+
     let mut buffer = RenderBuffer::new(ncols, nrows);
     buffer.clear([0.0, 0.0, 0.0, 1.0]);
 
@@ -119,8 +123,6 @@ impl FeatureTracker {
       let chain = self.store.chain_for_point(row, col, 0);
       if chain.len() > 2 { //TODO arbitrary cutoff
         let lead_evt = &chain[0];
-        let mut total_dist_x = 0;
-        let mut total_dist_y = 0;
 
         if lead_evt.timestamp >= lead_time_horizon {
           //add all events in the chain
@@ -128,21 +130,12 @@ impl FeatureTracker {
           for i in 0..(chain.len() - 1) {
             let evt = &chain[i];
             let old_evt = &chain[i + 1];
-            let dist_x = (evt.col as i32) - (old_evt.col as i32);
-            let dist_y = (evt.row as i32) - (old_evt.row as i32);
-            total_dist_x += dist_x;
-            total_dist_y += dist_y;
-
 
             let le_line: [f64; 4] = [evt.col as f64, evt.row as f64, old_evt.col as f64, old_evt.row as f64];
             chain_vec.push(le_line);
           }
           acc.push(chain_vec);
 
-          if 0 == total_dist_y {
-            //TODO
-            eprintln!("total_dist xy: {}, {}", total_dist_x, total_dist_y);
-          }
         }
       }
       acc
@@ -153,13 +146,17 @@ impl FeatureTracker {
       Self::render_track(chain, &mut buffer, i);
     }
 
-
     buffer.save(out_path).expect("Couldn't save");
   }
 
+  /// Render a representation of the SAE to a file
+  pub fn render_sae_frame_to_file(&self,  time_horizon: SaeTime, out_path: &str ) {
+    let out_img = self.render_sae_frame(time_horizon );
+    out_img.save(out_path).expect("Couldn't save");
+  }
 
   /// Render a representation of the SAE with the given cutoff time horizon
-  pub fn render_sae_frame(&self,  time_horizon: SaeTime ) -> RgbImage {
+  pub fn render_sae_frame(&self,  time_horizon: SaeTime) -> RgbImage {
     let mut out_img =   RgbImage::new(self.n_pixel_cols, self.n_pixel_rows);
 
     for row in 0..self.n_pixel_rows {
@@ -179,6 +176,28 @@ impl FeatureTracker {
           out_img.put_pixel(col as u32, row as u32, px);
         }
       }
+    }
+
+    out_img
+  }
+
+  pub const RED_PIXEL: [u8; 3] = [255u8, 0, 0];
+  pub const GREEN_PIXEL: [u8; 3] = [0, 255u8, 0];
+  pub const YELLOW_PIXEL: [u8; 3] = [255u8, 255u8, 0];
+  pub const BLUE_PIXEL: [u8; 3] = [0,0,  255u8];
+
+  /// render events into an image result
+  pub fn render_events(&self, events: &Vec<SaeEvent> ) -> RgbImage {
+    let mut out_img =   RgbImage::new(self.n_pixel_cols , self.n_pixel_rows);
+
+    for evt in events {
+      let px = match evt.polarity {
+        1 => image::Rgb(Self::YELLOW_PIXEL),
+        0 => image::Rgb(Self::GREEN_PIXEL),
+        _ => unreachable!()
+      };
+
+      out_img.put_pixel(evt.col as u32, evt.row as u32, px);
     }
 
     out_img
