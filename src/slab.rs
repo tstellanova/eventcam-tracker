@@ -7,12 +7,8 @@ use arrayvec::ArrayVec;
 
 //TODO move some of these constants to a configuration file?
 
-/// the time horizon in the past, beyond which we ignore older events
-//pub const FORGETTING_TIME: SaeTime = 5000;
-/// maximum spatial distance between matching nodes
-pub const DCONN: u16 = 5;
-
 /// Maximum rectilinear taxicab/manhattan spatial distance between center point and matching neighbor
+/// (see related "dconn" from arcstar tracking paper, reduced to 5x5 patch in ACE paper)
 const MAX_RL_SPATIAL_DISTANCE: u32 = 4;
 
 const PATCH_SQUARE_DIM: usize = 5; //5x5 grid around center point
@@ -254,6 +250,7 @@ mod tests {
     // Test whether we can insert events in a spiral starting from a center point,
     // and look to see whether the match tracking is accurate.
     let mut store = SlabStore::new();
+    let time_horizon: SaeTime = 0;
 
     let irow: i32 = 320;
     let icol: i32 = 320;
@@ -265,7 +262,7 @@ mod tests {
     first_node.timestamp = 0 as SaeTime;
     first_node.row = irow as u16;
     first_node.col = icol as u16;
-    let check = store.add_and_match_feature(&first_node, 5000);
+    let check = store.add_and_match_feature(&first_node, time_horizon);
     assert_eq!(true, check.is_none()); //should be no matches yet
 
     const MAX_IDX: usize = SQUARE_DIM * SQUARE_DIM;
@@ -282,18 +279,14 @@ mod tests {
       node.norm_descriptor = Some(Box::new([0.5f32; NORM_DESCRIPTOR_LEN]) );
       println!("insert {} ( {}, {} ) -> [{}, {}, {}]", i, x, y, row, col, node.timestamp);
 
-      let check = store.add_and_match_feature(&node, 5000);
+      let check = store.add_and_match_feature(&node, time_horizon);
       if prior_node.is_some() {
         assert_eq!(true, check.is_some());
         //because we're inserting in a spiral, the best match should be prior insertion
         let prior_evt = prior_node.unwrap().event;
         let check_evt = check.unwrap().event;
-//                if i > 9 { //first neighbors are touching 0,0 which remains a leaf?
-        //println!("prior: {:?}\ncheck: {:?}", prior_evt, check_evt);
         println!("best for {} check {} s/b {} ",node.timestamp, check_evt.timestamp, prior_evt.timestamp);
         assert_eq!(prior_evt.timestamp, check_evt.timestamp);
-//                }
-
       }
       prior_node = Some(FeatureLocator {
         cell_id: (node.row as usize, node.col as usize),
@@ -309,7 +302,7 @@ mod tests {
 
     assert_eq!(true, prior_node.is_some());
     let last_evt = prior_node.unwrap().event;
-    let chain = store.chain_for_point(last_evt.row, last_evt.col, 10);
+    let chain = store.chain_for_point(last_evt.row, last_evt.col, time_horizon);
     assert_eq!(chain.len(), SLAB_DEPTH);
   }
 
@@ -319,31 +312,32 @@ mod tests {
   fn test_distant_feature_insertion() {
     let mut store = SlabStore::new();
     let mut node1 = generate_test_event();
+    let time_horizon: SaeTime = 0;
     node1.timestamp = 100;
     node1.row = 320;
     node1.col = 320;
-    let check1 = store.add_and_match_feature(&node1, 5000);
+    let check1 = store.add_and_match_feature(&node1, time_horizon);
     assert_eq!(true, check1.is_none());
 
     //insert a event that is too far away to be considered a match for the previous event
     let mut node2 = generate_test_event();
     node2.timestamp = 200;
-    node2.row = node1.row + 10*DCONN;
-    node2.col = node1.col + 10*DCONN;
-    let check2 = store.add_and_match_feature(&node2, 5000);
+    node2.row = node1.row + 10*MAX_RL_SPATIAL_DISTANCE as u16;
+    node2.col = node1.col + 10*MAX_RL_SPATIAL_DISTANCE as u16;
+    let check2 = store.add_and_match_feature(&node2, time_horizon);
     assert_eq!(true, check2.is_none());
 
     //insert event that is a match to the previous event
     let mut node3 = generate_test_event();
     node3.timestamp = 300;
-    node3.row = node2.row + DCONN/2;
-    node3.col = node2.col + DCONN/2;
-    let check3 = store.add_and_match_feature(&node3, 5000);
+    node3.row = node2.row + (MAX_RL_SPATIAL_DISTANCE/2) as u16;
+    node3.col = node2.col + (MAX_RL_SPATIAL_DISTANCE/2) as u16;
+    let check3 = store.add_and_match_feature(&node3, time_horizon);
     assert_eq!(true, check3.is_some());
     assert_eq!(check3.unwrap().event.timestamp, node2.timestamp);
 
     //verify chain is correct
-    let chain = store.chain_for_point(node3.row, node3.col, 5000);
+    let chain = store.chain_for_point(node3.row, node3.col, time_horizon);
     assert_eq!(true,  chain.len() == 2);
     assert_eq!(chain[0].timestamp, node3.timestamp);
     assert_eq!(chain[1].timestamp, node2.timestamp);
