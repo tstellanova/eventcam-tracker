@@ -17,8 +17,8 @@ rayon = "1.1.0"
 
 
 [dependencies.arcstar]
-#path = "../arcstar"
-git = "https://github.com/tstellanova/arcstar"
+path = "../arcstar"
+#git = "https://github.com/tstellanova/arcstar"
 
 
 [dev-dependencies]
