@@ -1,4 +1,3 @@
-//use rayon::prelude::*;
 
 use arcstar::sae_types::*;
 use arcstar::detector;
