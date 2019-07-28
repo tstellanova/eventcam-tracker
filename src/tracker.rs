@@ -5,6 +5,7 @@ use arcstar::detector;
 
 use graphics_buffer::{RenderBuffer, IDENTITY};
 use image::{ RgbImage };
+use imageproc::drawing;
 
 use crate::slab::{SlabStore};
 
@@ -187,13 +188,13 @@ impl FeatureTracker {
   pub const BLUE_PIXEL: [u8; 3] = [0,0,  255u8];
 
   /// render events into an image result
-  pub fn render_events(&self, events: &Vec<SaeEvent> ) -> RgbImage {
+  pub fn render_events(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3] ) -> RgbImage {
     let mut out_img =   RgbImage::new(self.n_pixel_cols , self.n_pixel_rows);
 
     for evt in events {
       let px = match evt.polarity {
-        1 => image::Rgb(Self::YELLOW_PIXEL),
-        0 => image::Rgb(Self::GREEN_PIXEL),
+        1 => image::Rgb(*rising_pix),
+        0 => image::Rgb(*falling_pix),
         _ => unreachable!()
       };
 
@@ -203,6 +204,33 @@ impl FeatureTracker {
     out_img
   }
 
+  pub fn render_events_to_file(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3], out_path: &str ) {
+    let out_img = self.render_events(events, rising_pix, falling_pix);
+    out_img.save(out_path).expect("Couldn't save");
+  }
+
+  pub fn render_corners(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3] ) -> RgbImage {
+    let mut out_img =   RgbImage::new(self.n_pixel_cols , self.n_pixel_rows);
+
+    for evt in events {
+      let px = match evt.polarity {
+        1 => image::Rgb(*rising_pix),
+        0 => image::Rgb(*falling_pix),
+        _ => unreachable!()
+      };
+
+      drawing::draw_cross_mut(&mut out_img, px, evt.col as i32, evt.row as i32);
+//      out_img.put_pixel(evt.col as u32, evt.row as u32, px);
+    }
+
+    out_img
+  }
+
+  pub fn render_corners_to_file(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3], out_path: &str ) {
+    let out_img = self.render_corners(events, rising_pix, falling_pix);
+    out_img.save(out_path).expect("Couldn't save");
+
+  }
 
 //  //squiggle that triggers corner detector, but not clear what this corresponds to IRL
 //  const SAMPLE_CORNER_DIM: usize = 8;
