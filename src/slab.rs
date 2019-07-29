@@ -9,7 +9,7 @@ use arrayvec::ArrayVec;
 
 /// Maximum rectilinear taxicab/manhattan spatial distance between center point and matching neighbor
 /// (see related "dconn" from arcstar tracking paper, reduced to 5x5 patch in ACE paper)
-const MAX_RL_SPATIAL_DISTANCE: u32 = 4;
+pub const MAX_RL_SPATIAL_DISTANCE: u32 = 4;
 
 const PATCH_SQUARE_DIM: usize = 5; //5x5 grid around center point
 

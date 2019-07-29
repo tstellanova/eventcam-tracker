@@ -1,18 +1,18 @@
 
 use arcstar::sae_types::*;
 use arcstar::detector;
+use crate::slab;
 
-
-//use graphics_buffer::{RenderBuffer, IDENTITY};
 use image::{ RgbImage };
 use imageproc::drawing;
 
-use crate::slab::{SlabStore};
+use rand::Rng;
+
 
 pub struct FeatureTracker {
   n_pixel_rows: u32,
   n_pixel_cols: u32,
-  store: SlabStore,
+  store: slab::SlabStore,
   sae_rise: SaeMatrix,
   sae_fall: SaeMatrix,
   ///related to tmax from ACE paper
@@ -40,7 +40,7 @@ impl FeatureTracker {
     FeatureTracker {
       n_pixel_cols: img_w,
       n_pixel_rows: img_h,
-      store: SlabStore::new(),
+      store: slab::SlabStore::new(),
       sae_rise: SaeMatrix::zeros(img_h as usize, img_w as usize),
       sae_fall: SaeMatrix::zeros(img_h as usize, img_w as usize),
       time_window: time_window,
@@ -188,6 +188,7 @@ impl FeatureTracker {
     out_img
   }
 
+  /// render events into an image file
   pub fn render_events_to_file(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3], out_path: &str ) {
     let out_img = self.render_events(events, rising_pix, falling_pix);
     out_img.save(out_path).expect("Couldn't save");
@@ -204,7 +205,6 @@ impl FeatureTracker {
       };
 
       drawing::draw_cross_mut(&mut out_img, px, evt.col as i32, evt.row as i32);
-//      out_img.put_pixel(evt.col as u32, evt.row as u32, px);
     }
 
     out_img
@@ -216,13 +216,13 @@ impl FeatureTracker {
 
   }
 
-//  //squiggle that triggers corner detector, but not clear what this corresponds to IRL
-//  const SAMPLE_CORNER_DIM: usize = 8;
-//  const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
-//    [1, -4], [2, -3], [3, -2], [4, -1],
-//    [1, -3], [2, -2], [3, -1],
-//    [0, 0]
-//  ];
+  //squiggle that triggers the corner detector, but not clear what this corresponds to IRL
+  const SAMPLE_CORNER_DIM: usize = 8;
+  const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
+    [1, -4], [2, -3], [3, -2], [4, -1],
+    [1, -3], [2, -2], [3, -1],
+    [0, 0]
+  ];
 
 //  //true corner L
 //  const SAMPLE_CORNER_DIM: usize = 10;
@@ -234,12 +234,13 @@ impl FeatureTracker {
 //  ];
 
 
-  /*
-  /// Insert a synthetic event at the given position
+
+  const SYNTH_TIME_INCR:SaeTime = 1;
+  /// Insert a synthetic event at the given position:
   /// append the synthesized event to the modified event list
   pub fn insert_one_synth_event(ctr_row: i32, ctr_col: i32, timestamp: &mut SaeTime, event_list: &mut Vec<SaeEvent> ) {
     for j in 0..Self::SAMPLE_CORNER_DIM {
-      *timestamp += TIME_INCR;
+      *timestamp += Self::SYNTH_TIME_INCR;
       let dxy = Self::SAMPLE_CORNER_GEN[j];
       let evt_row = ctr_row + dxy[1];
       let evt_col = ctr_col + dxy[0];
@@ -262,33 +263,22 @@ impl FeatureTracker {
       event_list.push(evt);
     }
   }
-  */
 
-/*
+
   /// Generate a series of synthetic events for stimulating the tracker
   pub fn process_synthetic_events(img_w: u32, img_h: u32, render_out: bool) {
-    let mut tracker = Box::new(FeatureTracker::new());
-    let mut timestamp: SaeTime = TIME_INCR;
+    const TMAX_FORGETTING_TIME: SaeTime = (0.1 / 1E-6) as SaeTime;
+    let mut tracker = Box::new(FeatureTracker::new(img_w, img_h, TMAX_FORGETTING_TIME));
+    let mut timestamp: SaeTime = 1;
 
-    // The Surface of Active Events (timestamps for last event at each pixel point)
-    let mut sae_rise = SaeMatrix::zeros(
-      img_h as usize, // rows
-      img_w as usize // cols
-    );
-
-    let mut sae_fall = SaeMatrix::zeros(
-      img_h as usize, // rows
-      img_w as usize // cols
-    );
-
-    let mut ctr_col: i32 = (img_w as i32) - (2 * DCONN as i32);
+    let mut ctr_col: i32 = (img_w as i32) - ((2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32);
     let ctr_row: i32 = (img_w / 2) as i32;
     let mut chunk_count = 0;
 
     //these three constants in essence define the minimum distinguishable corner grid
     const COL_DECR: i32 = 2;
-    let row_gap: i32 = 2 * DCONN as i32;
-    let col_gap: i32 = 2 * DCONN as i32;
+    let row_gap: i32 = (2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32;
+    let col_gap: i32 = (2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32;
 
 
     let half_width: i32 = (img_w / 2) as i32;
@@ -306,45 +296,45 @@ impl FeatureTracker {
       Self::insert_one_synth_event(ctr_row, ctr_col - col_gap, &mut timestamp, &mut event_list);
       Self::insert_one_synth_event(ctr_row + row_gap, ctr_col - col_gap, &mut timestamp, &mut event_list);
 
-      let matches = process_events(&mut tracker, &mut sae_rise, &mut sae_fall, &event_list);
+      let corners = tracker.process_events( &event_list);
 
       if render_out {
-        let lead_events = matches.iter().map(|(new, _old)| new.clone()).collect();
-        let out_img = render_corners(img_h, img_w, &lead_events);
-        let out_path = format!("./out/sae_{:04}_evts.png", chunk_count);
-        //flame::start("save_image");
-        out_img.save(out_path).expect("Couldn't save");
-        //flame::end("save_image");
-      }
+        let render_corners = true;
+        let render_tracks = true;
+        let horizon = 0;
 
-      let out_path = format!("./out/sae_{:04}_tracks.png", chunk_count);
-
-      let mut minimum_lead_event_time = SaeTime::max_value();
-      for (new_evt, _old_evt) in matches {
-        if new_evt.timestamp < minimum_lead_event_time {
-          minimum_lead_event_time = new_evt.timestamp;
+        if render_corners {
+          let out_path = format!("./out/sae_{:04}_corners.png", chunk_count);
+          tracker.render_corners_to_file( &corners, &FeatureTracker::YELLOW_PIXEL, &FeatureTracker::GREEN_PIXEL, &out_path );
         }
+        if render_tracks {
+          let out_path= format!("./out/sae_{:04}_tracks.png", chunk_count);
+          tracker.render_tracks_to_file(horizon, &out_path);
+        }
+
       }
-      if render_out {
-        tracker.render_tracks_to_file(img_h, img_w, minimum_lead_event_time, &out_path);
-      }
+
 
       ctr_col -= COL_DECR;
     }
   }
-*/
+
 
 }
 
 
-//
-//#[cfg(test)]
-//mod tests {
-//    use super::*;
-//x
-//    #[test]
-//    fn test_find_neighbors() {
-//        let mut tracker = FeatureTracker::new();
-//        //test empty tracker
-//    }
-//}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use std::fs::create_dir_all;
+  use std::path::Path;
+
+    #[test]
+    fn test_synthetic_worm_race() {
+      let img_w = 320;
+      let img_h = 320;
+      create_dir_all(Path::new("./out/")).expect("Couldn't create output dir");
+      FeatureTracker::process_synthetic_events(img_w, img_h, true);
+    }
+}
