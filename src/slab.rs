@@ -58,12 +58,16 @@ impl SlabStore {
     inst
   }
 
+  /// get the chain of events in this cell that are fresher than the time horizon given
   pub fn chain_for_point(&self, row: u16, col: u16, time_horizon: SaeTime) -> Vec<SaeEvent> {
     let mut res:Vec<SaeEvent> = vec!();
     let cell = &self.mx[row as usize][col as usize];
     for item in cell {
       if item.timestamp >= time_horizon {
         res.push(item.clone());
+      }
+      else {
+        break;
       }
     }
 

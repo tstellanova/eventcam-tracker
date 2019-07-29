@@ -3,7 +3,7 @@ use arcstar::sae_types::*;
 use arcstar::detector;
 
 
-use graphics_buffer::{RenderBuffer, IDENTITY};
+//use graphics_buffer::{RenderBuffer, IDENTITY};
 use image::{ RgbImage };
 use imageproc::drawing;
 
@@ -77,6 +77,7 @@ impl FeatureTracker {
     corners
   }
 
+
   pub fn add_and_match_feature(&mut self, new_evt: &SaeEvent, time_horizon: SaeTime) -> Option<SaeEvent> {
     let res = self.store.add_and_match_feature(new_evt, time_horizon);
     match res {
@@ -85,70 +86,7 @@ impl FeatureTracker {
     }
   }
 
-  fn render_track(segments: &Vec<[f64; 4]>, buffer: &mut RenderBuffer, color_hint: usize) {
-    for seg in segments {
-      Self::render_one_line(*seg, buffer, color_hint);
-    }
-  }
 
-  fn render_one_line(line: [f64; 4], buffer: &mut RenderBuffer, color_hint: usize) {
-    let color_idx = (color_hint * (FeatureTracker::RAINBOW_WHEEL_DIM / 3) + color_hint) % FeatureTracker::RAINBOW_WHEEL_DIM;
-    let rgb_data = FeatureTracker::RAINBOW_WHEEL_GEN[color_idx];
-    let px: [f32; 4] = [
-      (rgb_data[0] as f32) / 255.0,
-      (rgb_data[1] as f32) / 255.0,
-      (rgb_data[2] as f32) / 255.0,
-      1.0 //alpha
-    ];
-    graphics::line(
-      px,
-      1.0,
-      line,
-      IDENTITY,
-      buffer
-    );
-  }
-
-
-  /// Render lines for all the valid tracks to the given file path
-  pub fn render_tracks_to_file(&self, lead_time_horizon: SaeTime, out_path: &str) {
-    let nrows = self.n_pixel_rows;
-    let ncols = self.n_pixel_cols;
-
-    let mut buffer = RenderBuffer::new(ncols, nrows);
-    buffer.clear([0.0, 0.0, 0.0, 1.0]);
-
-    let chains_list: Vec<Vec<[f64; 4]>> = (0..nrows * ncols).fold(vec!(), |mut acc, idx| {
-      let row: u16 = (idx / ncols) as u16;
-      let col: u16 = (idx % ncols) as u16;
-      let chain = self.store.chain_for_point(row, col, 0);
-      if chain.len() > 2 { //TODO arbitrary cutoff
-        let lead_evt = &chain[0];
-
-        if lead_evt.timestamp >= lead_time_horizon {
-          //add all events in the chain
-          let mut chain_vec: Vec<[f64; 4]> = vec!();
-          for i in 0..(chain.len() - 1) {
-            let evt = &chain[i];
-            let old_evt = &chain[i + 1];
-
-            let le_line: [f64; 4] = [evt.col as f64, evt.row as f64, old_evt.col as f64, old_evt.row as f64];
-            chain_vec.push(le_line);
-          }
-          acc.push(chain_vec);
-
-        }
-      }
-      acc
-    });
-
-    println!("rendering {} lines", chains_list.len());
-    for (i, chain) in chains_list.iter().enumerate() {
-      Self::render_track(chain, &mut buffer, i);
-    }
-
-    buffer.save(out_path).expect("Couldn't save");
-  }
 
   /// Render a representation of the SAE to a file
   pub fn render_sae_frame_to_file(&self,  time_horizon: SaeTime, out_path: &str ) {
@@ -186,6 +124,52 @@ impl FeatureTracker {
   pub const GREEN_PIXEL: [u8; 3] = [0, 255u8, 0];
   pub const YELLOW_PIXEL: [u8; 3] = [255u8, 255u8, 0];
   pub const BLUE_PIXEL: [u8; 3] = [0,0,  255u8];
+
+
+  /// render all tracks into an image
+  pub fn render_tracks(&self, time_horizon: SaeTime) -> RgbImage {
+    let nrows = self.n_pixel_rows;
+    let ncols = self.n_pixel_cols;
+    let mut out_img =   RgbImage::new(ncols , nrows);
+
+    // collect the list of tracks to render
+    let chains_list: Vec<Vec<((f32, f32), (f32, f32))>> =
+      (0..nrows * ncols).fold(vec!(), |mut acc, idx| {
+        let row: u16 = (idx / ncols) as u16;
+        let col: u16 = (idx % ncols) as u16;
+        let chain = self.store.chain_for_point(row, col, time_horizon);
+        if chain.len() > 4 { //TODO arbitrary cutoff
+          //add all events in the chain that are after the time horizon
+          let mut chain_vec: Vec<((f32, f32), (f32, f32))> = Vec::with_capacity(chain.len());
+          for i in 0..(chain.len() - 1) {
+            let evt = &chain[i];
+            let old_evt = &chain[i + 1];
+            let pair = ((evt.col as f32, evt.row as f32), (old_evt.col as f32, old_evt.row as f32));
+            chain_vec.push(pair);
+          }
+          acc.push(chain_vec);
+        }
+        acc
+      });
+
+    for (i, chain) in chains_list.iter().enumerate() {
+      let rgb_data = FeatureTracker::RAINBOW_WHEEL_GEN[i % FeatureTracker::RAINBOW_WHEEL_DIM];
+      let px = image::Rgb(rgb_data);
+
+      for segment in chain {
+        drawing::draw_line_segment_mut(&mut out_img, segment.0, segment.1, px);
+      }
+    }
+
+    out_img
+  }
+
+  /// Render lines for all the valid tracks to the given file path
+  pub fn render_tracks_to_file(&self, time_horizon: SaeTime, out_path: &str) {
+    let out_img = self.render_tracks(time_horizon );
+    out_img.save(out_path).expect("Couldn't save");
+  }
+
 
   /// render events into an image result
   pub fn render_events(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3] ) -> RgbImage {
