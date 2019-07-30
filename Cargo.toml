@@ -8,12 +8,9 @@ edition = "2018"
 [dependencies]
 arrayvec = "0.4.10"
 nalgebra = "0.18.0"
-graphics_buffer = "0.5.6"
-piston2d-graphics = "0.30.0"
 imageproc = "0.18.0"
 image = "0.21.1"
 rand = "0.6.5"
-#rayon = "1.1.0"
 
 
 [dependencies.arcstar]
