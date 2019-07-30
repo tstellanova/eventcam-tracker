@@ -321,9 +321,9 @@ const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
       Self::insert_one_synth_event(ctr_row, ctr_col, &mut timestamp, 1, &mut event_list);
       Self::insert_one_synth_event(ctr_row + row_gap, ctr_col, &mut timestamp, 1, &mut event_list);
 
-//      Self::insert_one_synth_event(ctr_row - row_gap, ctr_col - col_gap, &mut timestamp, 0, &mut event_list);
-//      Self::insert_one_synth_event(ctr_row, ctr_col - col_gap, &mut timestamp, 0, &mut event_list);
-//      Self::insert_one_synth_event(ctr_row + row_gap, ctr_col - col_gap, &mut timestamp,  0,&mut event_list);
+      Self::insert_one_synth_event(ctr_row - row_gap, ctr_col - col_gap, &mut timestamp, 0, &mut event_list);
+      Self::insert_one_synth_event(ctr_row, ctr_col - col_gap, &mut timestamp, 0, &mut event_list);
+      Self::insert_one_synth_event(ctr_row + row_gap, ctr_col - col_gap, &mut timestamp,  0,&mut event_list);
 
 
       let corners = tracker.process_events( &event_list);
