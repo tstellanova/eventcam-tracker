@@ -231,7 +231,7 @@ impl SlabStore {
       let match_cell_id = parent_loc.cell_id;
       let parent_evt = &parent_loc.event;
       //copy over the chain from the matched cell,
-      //TODO STARTING from the actual parent event!
+      //starting from the actual parent event!
       let in_cell:&mut SlabCell = &mut self.mx[match_cell_id.0][match_cell_id.1];
       let parent_is_leaf = in_cell.len() == 1;
 
