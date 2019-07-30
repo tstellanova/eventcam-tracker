@@ -295,10 +295,6 @@ mod tests {
 
   fn generate_test_event() -> SaeEvent {
     generate_test_event_with_desc(&[0.5f32; NORM_DESCRIPTOR_LEN])
-//    [0.5; NORM_DESCRIPTOR_LEN]
-//    let mut evt = SaeEvent::new();
-//    evt.norm_descriptor = Some(Box::new([0.5; NORM_DESCRIPTOR_LEN]));
-//    evt
   }
 
   fn generate_test_event_with_desc(desc: &[f32; NORM_DESCRIPTOR_LEN]) -> SaeEvent {
@@ -309,8 +305,9 @@ mod tests {
 
   #[test]
   fn test_spiral_insert() {
-    // Test whether we can insert events in a spiral starting from a center point,
+    // Test whether we can insert features in a spiral starting from a center point,
     // and look to see whether the match tracking is accurate.
+    // Note that all of the features inserted in this test have the same descriptor
     let mut store = SlabStore::new();
     let time_horizon: SaeTime = 0;
 
@@ -364,7 +361,6 @@ mod tests {
     let chain = store.chain_for_point(last_evt.row, last_evt.col, time_horizon);
     assert_eq!(chain.len(), SLAB_DEPTH);
   }
-
 
   #[test]
   fn test_distant_feature_matching() {
