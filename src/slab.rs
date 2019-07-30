@@ -12,6 +12,7 @@ use arrayvec::ArrayVec;
 pub const MAX_RL_SPATIAL_DISTANCE: u32 = 4;
 
 const PATCH_SQUARE_DIM: usize = 5; //5x5 grid around center point
+const MAX_PATCH_NEIGHBORS: usize = (PATCH_SQUARE_DIM*PATCH_SQUARE_DIM) - 1;
 
 /// max number of pixels in each 2D dimension
 const MAX_PIXEL_DIM: usize = 1024;
@@ -25,6 +26,7 @@ type SlabCell =  ArrayVec<[SaeEvent;SLAB_DEPTH]>;
 type SlabRow = ArrayVec<[SlabCell; MAX_PIXEL_DIM]>;
 type SlabMatrix = Vec<SlabRow>;
 
+/// row, column for cell in slab
 type SlabCellId = (usize, usize);
 
 #[derive( Clone, Debug, PartialEq)]
@@ -119,7 +121,7 @@ impl SlabStore {
   /// Return the best matching parent cell or none
   fn find_best_parent_cell(&self, evt: &SaeEvent, time_horizon: SaeTime) -> Option<FeatureLocator> {
     let (leaf_neighbors, nonleaf_neighbors) = self.collect_neighbors(evt, time_horizon);
-    //println!("leaf_neighbors {} nonleaf_neighbors {}", leaf_neighbors.len(), nonleaf_neighbors.len());
+    println!("leaf_neighbors {} nonleaf_neighbors {}", leaf_neighbors.len(), nonleaf_neighbors.len());
 
     let mut best_parent_opt:Option<FeatureLocator> =
       Self::find_closest_and_freshest_neighbor(evt, &leaf_neighbors);
@@ -137,9 +139,8 @@ impl SlabStore {
   fn collect_neighbors(&self, evt: &SaeEvent, time_horizon: SaeTime) -> (Vec<FeatureLocator>, Vec<FeatureLocator>) {
     let irow = evt.row as i32;
     let icol = evt.col as i32;
-    let mut leaf_neighbors:Vec<FeatureLocator> = vec!();
-    let mut nonleaf_neighbors:Vec<FeatureLocator> = vec!();
-//    let time_horizon: SaeTime = evt.timestamp.max(FORGETTING_TIME) - FORGETTING_TIME;
+    let mut leaf_neighbors:Vec<FeatureLocator> = Vec::with_capacity(MAX_PATCH_NEIGHBORS);
+    let mut nonleaf_neighbors:Vec<FeatureLocator> = Vec::with_capacity(MAX_PATCH_NEIGHBORS);
 
     let mut x: i32 = 1; //skip 0,0 since that's not a _neighbor_ for matching purposes?
     let mut y: i32 = 0;
@@ -150,31 +151,33 @@ impl SlabStore {
       let col: usize = (icol + x) as usize;
       let slab_cell_id: SlabCellId = (row, col);
 
-      //println!("{} ( {}, {} ) ... [{}, {}]", i, x, y, row, col);
+      println!("{} ( {}, {} ) ... [{}, {}]", _i, x, y, row, col);
       let cell = &self.mx[row][col];
-      if cell.len() == 1 {
-        let node = &cell[0];
-        if node.timestamp >= time_horizon &&
-          node.timestamp < evt.timestamp  //assume that evt is the freshest
-        {
-          leaf_neighbors.push(FeatureLocator {
-            cell_id: slab_cell_id,
-            event: node.clone()
-          });
-        }
-      }
-      else {
-        //roll up all the kids in the cell
-        for node in cell {
-          if node.timestamp >= time_horizon {
-            nonleaf_neighbors.push(FeatureLocator {
+      let cell_len = cell.len();
+      if cell_len > 0 {
+        if cell.len() == 1 {
+          let node = &cell[0];
+          if node.timestamp >= time_horizon &&
+            node.timestamp < evt.timestamp  //assume that evt is the freshest
+          {
+            leaf_neighbors.push(FeatureLocator {
               cell_id: slab_cell_id,
               event: node.clone()
             });
           }
-          else {
-            //TODO else mark for deletion??
-            //println!("time {} < {}",node.timestamp, time_horizon);
+        }
+        else {
+          //roll up all the kids in the cell
+          for node in cell {
+            if node.timestamp >= time_horizon {
+              nonleaf_neighbors.push(FeatureLocator {
+                cell_id: slab_cell_id,
+                event: node.clone()
+              });
+            } else {
+              //TODO else mark for deletion??
+              //println!("time {} < {}",node.timestamp, time_horizon);
+            }
           }
         }
       }
@@ -191,22 +194,62 @@ impl SlabStore {
   }
 
 
-  /// returns any matching parent event
-  pub fn add_and_match_feature(&mut self, evt: &SaeEvent, time_horizon: SaeTime) -> Option<FeatureLocator> {
-//    let time_horizon: SaeTime = evt.timestamp.max(FORGETTING_TIME) - FORGETTING_TIME;
-
-    let mut matched_feature_opt = None;
-
+  /// insert a feature in the slab
+  fn push_feature_to_cell(&mut self, evt: &SaeEvent, parent_opt: Option<FeatureLocator>, time_horizon: SaeTime) {
     let mut out_cell:SlabCell = SlabCell::new();
-    //insert freshest event at the top of the cell
     out_cell.push(evt.clone());
 
+    if parent_opt.is_some() {
+      let parent_loc = parent_opt.unwrap();
+      let match_cell_id = parent_loc.cell_id;
+      //copy over the chain from the matched cell
+      let in_cell:&mut SlabCell = &mut self.mx[match_cell_id.0][match_cell_id.1];
+      let parent_is_leaf = in_cell.len() == 1;
 
-    let parent = self.find_best_parent_cell(evt, time_horizon);
-    if parent.is_some() {
-      matched_feature_opt = parent.clone();
+      //since we've already inserted the freshest event, need to ensure
+      //we don't overflow the cell
+      let max_idx = in_cell.len().min(SLAB_DEPTH-1);
 
-      let match_cell_id = parent.unwrap().cell_id;
+      //copy over the older chain of events from the parent chain
+      for i in 0..max_idx  {
+        if in_cell[i].timestamp >= time_horizon {
+          out_cell.push(in_cell[i].clone());
+        }
+      }
+
+      // if the matched cell is a leaf, also push the new event there
+      if parent_is_leaf {
+        in_cell.insert(0, evt.clone());
+      }
+    }
+
+    self.mx[evt.row as usize][evt.col as usize] = out_cell;
+
+  }
+
+  /// returns any matching parent event
+  pub fn add_and_match_feature(&mut self, evt: &SaeEvent, time_horizon: SaeTime) -> Option<SaeEvent> {
+//    let mut matched_parent_opt = None;
+//    let mut out_cell:SlabCell = SlabCell::new();
+//    //insert freshest event at the top of the cell
+//    out_cell.push(evt.clone());
+
+    let parent_opt = self.find_best_parent_cell(evt, time_horizon);
+
+    self.push_feature_to_cell(evt, parent_opt.clone(), time_horizon);
+    if parent_opt.is_some() {
+      Some(parent_opt.unwrap().event)
+    }
+    else {
+      None
+    }
+
+    /*
+    if parent_opt.is_some() {
+      let parent_loc = parent_opt.unwrap();
+      matched_parent_opt = Some(parent_loc.event.clone());
+
+      let match_cell_id = parent_loc.cell_id;
       //copy over the chain from the matched cell
       let in_cell:&mut SlabCell = &mut self.mx[match_cell_id.0][match_cell_id.1];
       let parent_is_leaf = in_cell.len() == 1;
@@ -234,7 +277,9 @@ impl SlabStore {
 
     self.mx[evt.row as usize][evt.col as usize] = out_cell;
 
-    matched_feature_opt
+
+    matched_parent_opt
+    */
   }
 
 }
@@ -260,7 +305,7 @@ mod tests {
     let icol: i32 = 320;
     const SQUARE_DIM: usize = 9;
 
-    let mut prior_node: Option<FeatureLocator> = None;
+    let mut prior_node: Option<SaeEvent> = None;
 
     let mut first_node = SaeEvent::new();
     first_node.timestamp = 0 as SaeTime;
@@ -287,15 +332,12 @@ mod tests {
       if prior_node.is_some() {
         assert_eq!(true, check.is_some());
         //because we're inserting in a spiral, the best match should be prior insertion
-        let prior_evt = prior_node.unwrap().event;
-        let check_evt = check.unwrap().event;
+        let prior_evt = prior_node.unwrap();
+        let check_evt = check.unwrap();
         println!("best for {} check {} s/b {} ",node.timestamp, check_evt.timestamp, prior_evt.timestamp);
         assert_eq!(prior_evt.timestamp, check_evt.timestamp);
       }
-      prior_node = Some(FeatureLocator {
-        cell_id: (node.row as usize, node.col as usize),
-        event: node
-      });
+      prior_node = Some(node);
 
       if (x.abs() <= y.abs()) && ((x >= 0) || (x != y)) {
         x += if y >= 0 { 1 } else { -1 };
@@ -305,7 +347,7 @@ mod tests {
     }
 
     assert_eq!(true, prior_node.is_some());
-    let last_evt = prior_node.unwrap().event;
+    let last_evt = prior_node.unwrap();
     let chain = store.chain_for_point(last_evt.row, last_evt.col, time_horizon);
     assert_eq!(chain.len(), SLAB_DEPTH);
   }
@@ -338,13 +380,33 @@ mod tests {
     node3.col = node2.col + (MAX_RL_SPATIAL_DISTANCE/2) as u16;
     let check3 = store.add_and_match_feature(&node3, time_horizon);
     assert_eq!(true, check3.is_some());
-    assert_eq!(check3.unwrap().event.timestamp, node2.timestamp);
+    assert_eq!(check3.unwrap().timestamp, node2.timestamp);
 
     //verify chain is correct
     let chain = store.chain_for_point(node3.row, node3.col, time_horizon);
     assert_eq!(true,  chain.len() == 2);
     assert_eq!(chain[0].timestamp, node3.timestamp);
     assert_eq!(chain[1].timestamp, node2.timestamp);
+
+  }
+
+
+  #[test]
+  fn test_feature_matching() {
+    let mut store = SlabStore::new();
+    let mut node1 = generate_test_event();
+    let time_horizon: SaeTime = 0;
+    node1.timestamp = 100;
+    node1.row = 320;
+    node1.col = 320;
+    store.push_feature_to_cell(&node1, None, time_horizon);
+
+    let mut node2 = node1.clone();
+    node2.col = 322; //move slightly, max distance limited by PATCH_SQUARE_DIM
+    node2.timestamp = 200;
+    let parent_opt = store.add_and_match_feature(&node2, time_horizon);
+    assert_eq!(parent_opt.is_some(), true);
+    assert_eq!(parent_opt.unwrap().timestamp, node1.timestamp);
 
   }
 

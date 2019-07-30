@@ -80,10 +80,7 @@ impl FeatureTracker {
 
   pub fn add_and_match_feature(&mut self, new_evt: &SaeEvent, time_horizon: SaeTime) -> Option<SaeEvent> {
     let res = self.store.add_and_match_feature(new_evt, time_horizon);
-    match res {
-      Some(feat) => Some(feat.event),
-      None => None
-    }
+    res
   }
 
 
@@ -98,24 +95,43 @@ impl FeatureTracker {
   pub fn render_sae_frame(&self,  time_horizon: SaeTime) -> RgbImage {
     let mut out_img =   RgbImage::new(self.n_pixel_cols, self.n_pixel_rows);
 
+    //first find maximum values of SAE
+    let mut max_rise_timestamp:SaeTime = 0;
+    let mut max_fall_timestamp:SaeTime = 0;
+
     for row in 0..self.n_pixel_rows {
       for col in 0..self.n_pixel_cols {
-        let sae_rise_val: SaeTime = self.sae_rise[(row as usize, col as usize)] ;
-        let sae_fall_val: SaeTime = self.sae_fall[(row as usize, col as usize)] ;
+        let sae_rise_val: SaeTime = self.sae_rise[(row as usize, col as usize)];
+        if sae_rise_val > max_rise_timestamp { max_rise_timestamp = sae_rise_val;}
+        let sae_fall_val: SaeTime = self.sae_fall[(row as usize, col as usize)];
+        if sae_fall_val > max_fall_timestamp { max_fall_timestamp = sae_fall_val;}
+      }
+    }
+
+    let max_global_timestamp = max_rise_timestamp.max(max_fall_timestamp);
+
+    for row in 0..self.n_pixel_rows {
+      for col in 0..self.n_pixel_cols {
+        let sae_rise_val: SaeTime = self.sae_rise[(row as usize, col as usize)];
+        let sae_fall_val: SaeTime = self.sae_fall[(row as usize, col as usize)];
         let sae_val = sae_rise_val.max(sae_fall_val);
+
+        let sae_pix_frac = (sae_val as f32) / (max_global_timestamp as f32); // <= 1.0
+
         if 0 != sae_val && sae_val > time_horizon {
           let blue_val = 0;
           let total_val = (sae_fall_val + sae_rise_val) as f32;
-          let red_val: u8 = (255.0*(sae_rise_val as f32)/total_val) as u8;
-          let green_val: u8 = (255.0*(sae_fall_val as f32)/total_val) as u8;
+          let red_val: u8 = ((255.0 * sae_pix_frac )* (sae_rise_val as f32) / total_val) as u8;
+          let green_val: u8 = ((255.0 * sae_pix_frac) * (sae_fall_val as f32) / total_val) as u8;
 
           let px_data: [u8; 3] = [red_val, green_val, blue_val];
-          let px =  image::Rgb(px_data);
+          let px = image::Rgb(px_data);
 
           out_img.put_pixel(col as u32, row as u32, px);
         }
       }
     }
+
 
     out_img
   }
@@ -152,10 +168,11 @@ impl FeatureTracker {
         acc
       });
 
-    for (i, chain) in chains_list.iter().enumerate() {
-      let rgb_data = FeatureTracker::RAINBOW_WHEEL_GEN[i % FeatureTracker::RAINBOW_WHEEL_DIM];
-      let px = image::Rgb(rgb_data);
 
+    //draw each chain in its own color
+    for (i, chain) in chains_list.iter().enumerate() {
+      let rgb_data = FeatureTracker::RAINBOW_WHEEL_GEN[(i as usize) % FeatureTracker::RAINBOW_WHEEL_DIM];
+      let px = image::Rgb(rgb_data);
       for segment in chain {
         drawing::draw_line_segment_mut(&mut out_img, segment.0, segment.1, px);
       }
@@ -216,29 +233,39 @@ impl FeatureTracker {
 
   }
 
-  //squiggle that triggers the corner detector, but not clear what this corresponds to IRL
-  const SAMPLE_CORNER_DIM: usize = 8;
-  const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
-    [1, -4], [2, -3], [3, -2], [4, -1],
-    [1, -3], [2, -2], [3, -1],
-    [0, 0]
-  ];
+//  squiggle that triggers the corner detector, but not clear what this corresponds to IRL
+//  const SAMPLE_CORNER_DIM: usize = 8;
+//  const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
+//    [1, -4], [2, -3], [3, -2], [4, -1],
+//    [1, -3], [2, -2], [3, -1],
+//    [0, 0]
+//  ];
 
 //  //true corner L
 //  const SAMPLE_CORNER_DIM: usize = 10;
-//  const SAMPLE_CORNER_GEN: [[i32; 2]; SAMPLE_CORNER_DIM] = [
+//  const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
 //    [4, 0], [3,0], [2,0], [1,0],
 //    [1,-1],
 //    [0, -4], [0, -3], [0, -2], [0, -1],
 //    [0, 0]
 //  ];
 
+  //glider
+const SAMPLE_CORNER_DIM: usize = 7;
+const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
+  [3, 3], [3, -3],
+  [2, 2], [2 , -2],
+  [1, 1], [1, -1],
+  [0, 0],
+
+];
 
 
-  const SYNTH_TIME_INCR:SaeTime = 1;
+
+  const SYNTH_TIME_INCR:SaeTime = 10;
   /// Insert a synthetic event at the given position:
   /// append the synthesized event to the modified event list
-  pub fn insert_one_synth_event(ctr_row: i32, ctr_col: i32, timestamp: &mut SaeTime, event_list: &mut Vec<SaeEvent> ) {
+  pub fn insert_one_synth_event(ctr_row: i32, ctr_col: i32, timestamp: &mut SaeTime, polarity: u8, event_list: &mut Vec<SaeEvent> ) {
     for j in 0..Self::SAMPLE_CORNER_DIM {
       *timestamp += Self::SYNTH_TIME_INCR;
       let dxy = Self::SAMPLE_CORNER_GEN[j];
@@ -255,7 +282,7 @@ impl FeatureTracker {
       let evt = SaeEvent {
         row: evt_row as u16,
         col: evt_col as u16,
-        polarity: 1,
+        polarity: polarity,
         timestamp: *timestamp,
         norm_descriptor: Some(Box::new(ndesc)),
       };
@@ -271,37 +298,41 @@ impl FeatureTracker {
     let mut tracker = Box::new(FeatureTracker::new(img_w, img_h, TMAX_FORGETTING_TIME));
     let mut timestamp: SaeTime = 1;
 
-    let mut ctr_col: i32 = (img_w as i32) - ((2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32);
+    let spacer = (2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32;
+    let mut ctr_col: i32 = (img_w as i32) - spacer;
     let ctr_row: i32 = (img_w / 2) as i32;
     let mut chunk_count = 0;
 
     //these three constants in essence define the minimum distinguishable corner grid
-    const COL_DECR: i32 = 2;
-    let row_gap: i32 = (2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32;
-    let col_gap: i32 = (2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32;
-
+    const COL_DECR: i32 = 2; //how many pixels decrement per iteration
+    let row_gap: i32 = spacer;
+    let col_gap: i32 = spacer;
 
     let half_width: i32 = (img_w / 2) as i32;
     let total_frames = half_width / COL_DECR;
+
+    let max_time_delta: SaeTime = 24 * (Self::SYNTH_TIME_INCR * Self::SAMPLE_CORNER_DIM as u32);
 
     for _i in 0..total_frames {
       let mut event_list: Vec<SaeEvent> = vec!();
       chunk_count += 1;
 
-      Self::insert_one_synth_event(ctr_row - row_gap, ctr_col, &mut timestamp, &mut event_list);
-      Self::insert_one_synth_event(ctr_row, ctr_col, &mut timestamp, &mut event_list);
-      Self::insert_one_synth_event(ctr_row + row_gap, ctr_col, &mut timestamp, &mut event_list);
+      Self::insert_one_synth_event(ctr_row - row_gap, ctr_col, &mut timestamp, 1,&mut event_list);
+      Self::insert_one_synth_event(ctr_row, ctr_col, &mut timestamp, 1, &mut event_list);
+      Self::insert_one_synth_event(ctr_row + row_gap, ctr_col, &mut timestamp, 1, &mut event_list);
 
-      Self::insert_one_synth_event(ctr_row - row_gap, ctr_col - col_gap, &mut timestamp, &mut event_list);
-      Self::insert_one_synth_event(ctr_row, ctr_col - col_gap, &mut timestamp, &mut event_list);
-      Self::insert_one_synth_event(ctr_row + row_gap, ctr_col - col_gap, &mut timestamp, &mut event_list);
+//      Self::insert_one_synth_event(ctr_row - row_gap, ctr_col - col_gap, &mut timestamp, 0, &mut event_list);
+//      Self::insert_one_synth_event(ctr_row, ctr_col - col_gap, &mut timestamp, 0, &mut event_list);
+//      Self::insert_one_synth_event(ctr_row + row_gap, ctr_col - col_gap, &mut timestamp,  0,&mut event_list);
+
 
       let corners = tracker.process_events( &event_list);
+      println!("chunk {} events {} corners {}", chunk_count, event_list.len(), corners.len());
 
       if render_out {
         let render_corners = true;
         let render_tracks = true;
-        let horizon = 0;
+        let horizon = timestamp.max( max_time_delta) - max_time_delta;
 
         if render_corners {
           let out_path = format!("./out/sae_{:04}_corners.png", chunk_count);
@@ -312,8 +343,12 @@ impl FeatureTracker {
           tracker.render_tracks_to_file(horizon, &out_path);
         }
 
+        let out_path=  format!("./out/saesurf_{:04}.png", chunk_count);
+        tracker.render_sae_frame_to_file(horizon, &out_path);
+
       }
 
+      //assert_eq!(corners.len(), 6 );
 
       ctr_col -= COL_DECR;
     }
@@ -330,11 +365,12 @@ mod tests {
   use std::fs::create_dir_all;
   use std::path::Path;
 
-    #[test]
-    fn test_synthetic_worm_race() {
-      let img_w = 320;
-      let img_h = 320;
-      create_dir_all(Path::new("./out/")).expect("Couldn't create output dir");
-      FeatureTracker::process_synthetic_events(img_w, img_h, true);
-    }
+
+//  #[test]
+//  fn test_synthetic_worm_race() {
+//    let img_w = 320;
+//    let img_h = 320;
+//    create_dir_all(Path::new("./out/")).expect("Couldn't create output dir");
+//    FeatureTracker::process_synthetic_events(img_w, img_h, true);
+//  }
 }
