@@ -16,14 +16,26 @@ struct ChainContainer {
   color: [u8; 3],
 }
 
+
+///
+/// Note that portions of this work are based on
+/// "Asynchronous Corner Detection and Tracking for Event Cameras in Real-Time"
+/// by Alzugaray et al, which we'll refer to as the "ACD paper" herein,
+///
+/// and "ACE: An Efficient Asynchronous Corner Tracker for Event Cameras" by Alzugaray et al,
+/// which we'll refer to as the "ACE paper"
+///
+///
 pub struct FeatureTracker {
   n_pixel_rows: u32,
   n_pixel_cols: u32,
   store: slab::SlabStore,
   sae_rise: SaeMatrix,
   sae_fall: SaeMatrix,
-  ///related to tmax from ACE paper
+  ///related to ∆tmax from ACE paper
   time_window: SaeTime,
+  /// related to (κ = 50ms) redundancy filter from ACD paper
+  ref_time_filter: SaeTime,
 }
 
 impl FeatureTracker {
@@ -49,7 +61,7 @@ impl FeatureTracker {
     [255, 0, 127],
   ];
 
-  pub fn new(img_w: u32, img_h: u32, time_window: SaeTime) -> FeatureTracker {
+  pub fn new(img_w: u32, img_h: u32, time_window: SaeTime, ref_time_filter: SaeTime) -> FeatureTracker {
     FeatureTracker {
       n_pixel_cols: img_w,
       n_pixel_rows: img_h,
@@ -57,6 +69,7 @@ impl FeatureTracker {
       sae_rise: SaeMatrix::zeros(img_h as usize, img_w as usize),
       sae_fall: SaeMatrix::zeros(img_h as usize, img_w as usize),
       time_window: time_window,
+      ref_time_filter: ref_time_filter,
     }
   }
 
@@ -71,6 +84,13 @@ impl FeatureTracker {
       1 => &mut self.sae_rise,
       0 | _ => &mut self.sae_fall,
     };
+
+    //filter noisy/redundant events using reference time threshold
+    let last_timestamp = sae_pol[(row, col)];
+    if (evt.timestamp - last_timestamp) < self.ref_time_filter {
+      //ignore redundant events (noisy event filter)
+      return None
+    }
 
     sae_pol[(row, col)] = evt.timestamp;
     let feature =  detector::detect_and_compute_one(sae_pol, evt);
@@ -167,7 +187,8 @@ impl FeatureTracker {
 
 
 
-  /// render all tracks into an image
+
+    /// render all tracks into an image
   pub fn render_tracks(&self, time_horizon: SaeTime) -> RgbImage {
     let nrows = self.n_pixel_rows;
     let ncols = self.n_pixel_cols;
@@ -333,7 +354,7 @@ const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
   /// Generate a series of synthetic events for stimulating the tracker
   pub fn process_synthetic_events(img_w: u32, img_h: u32, render_out: bool) {
     const TMAX_FORGETTING_TIME: SaeTime = (0.1 / 1E-6) as SaeTime;
-    let mut tracker = Box::new(FeatureTracker::new(img_w, img_h, TMAX_FORGETTING_TIME));
+    let mut tracker = Box::new(FeatureTracker::new(img_w, img_h, TMAX_FORGETTING_TIME, 0));
     let mut timestamp: SaeTime = 1;
 
     let spacer = (2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32;
