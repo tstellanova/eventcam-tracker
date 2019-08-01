@@ -9,17 +9,42 @@ use imageproc::drawing;
 use rand::Rng;
 
 
+struct ChainContainer {
+  /// the line segments to render
+  chain: Vec<((f32, f32), (f32, f32))>,
+  /// color for this chain
+  color: [u8; 3],
+}
+
+
+///
+/// Note that portions of this work are based on
+/// "Asynchronous Corner Detection and Tracking for Event Cameras in Real-Time"
+/// by Alzugaray et al, which we'll refer to as the "ACD paper" herein,
+///
+/// and "ACE: An Efficient Asynchronous Corner Tracker for Event Cameras" by Alzugaray et al,
+/// which we'll refer to as the "ACE paper"
+///
+///
 pub struct FeatureTracker {
   n_pixel_rows: u32,
   n_pixel_cols: u32,
   store: slab::SlabStore,
   sae_rise: SaeMatrix,
   sae_fall: SaeMatrix,
-  ///related to tmax from ACE paper
+  ///related to ∆tmax from ACE paper
   time_window: SaeTime,
+  /// related to (κ = 50ms) redundancy filter from ACD paper
+  ref_time_filter: SaeTime,
 }
 
 impl FeatureTracker {
+
+  pub const RED_PIXEL: [u8; 3] = [255u8, 0, 0];
+  pub const GREEN_PIXEL: [u8; 3] = [0, 255u8, 0];
+  pub const YELLOW_PIXEL: [u8; 3] = [255u8, 255u8, 0];
+  pub const BLUE_PIXEL: [u8; 3] = [0,0,  255u8];
+
   pub const RAINBOW_WHEEL_DIM: usize = 12;
   pub const RAINBOW_WHEEL_GEN: [[u8; 3]; Self::RAINBOW_WHEEL_DIM] = [
     [255, 0, 0],
@@ -36,7 +61,7 @@ impl FeatureTracker {
     [255, 0, 127],
   ];
 
-  pub fn new(img_w: u32, img_h: u32, time_window: SaeTime) -> FeatureTracker {
+  pub fn new(img_w: u32, img_h: u32, time_window: SaeTime, ref_time_filter: SaeTime) -> FeatureTracker {
     FeatureTracker {
       n_pixel_cols: img_w,
       n_pixel_rows: img_h,
@@ -44,31 +69,42 @@ impl FeatureTracker {
       sae_rise: SaeMatrix::zeros(img_h as usize, img_w as usize),
       sae_fall: SaeMatrix::zeros(img_h as usize, img_w as usize),
       time_window: time_window,
+      ref_time_filter: ref_time_filter,
     }
   }
 
 
+  /// process a single pixel change event,
+  /// return it as a feature if it's a corner
   pub fn process_one_event(&mut self, evt: &SaeEvent) -> Option<SaeEvent> {
     let row = evt.row as usize;
     let col = evt.col  as usize;
 
     let sae_pol =  match evt.polarity {
       1 => &mut self.sae_rise,
-      _ => &mut self.sae_fall,
+      0 | _ => &mut self.sae_fall,
     };
+
+    //filter noisy/redundant events using reference time threshold
+    let last_timestamp = sae_pol[(row, col)];
+    if (evt.timestamp - last_timestamp) < self.ref_time_filter {
+      //ignore redundant events (noisy event filter)
+      return None
+    }
 
     sae_pol[(row, col)] = evt.timestamp;
     let feature =  detector::detect_and_compute_one(sae_pol, evt);
 
     if feature.is_some() {
+      // this event is a feature -- add it to the store
       let new_evt = feature.clone().unwrap();
-      let time_horizon: SaeTime = new_evt.timestamp.max(self.time_window) - self.time_window;
-      self.add_and_match_feature(&new_evt, time_horizon);
+      self.track_feature(&new_evt);
     }
 
     feature
   }
 
+  /// process a list of pixel change events.  these may take place over any time span
   pub fn process_events(&mut self, event_list: &Vec<SaeEvent>) -> Vec<SaeEvent>  {
     let corners: Vec<SaeEvent> = event_list.iter().filter_map(|evt| {
       self.process_one_event(evt)
@@ -77,13 +113,11 @@ impl FeatureTracker {
     corners
   }
 
-
-  pub fn add_and_match_feature(&mut self, new_evt: &SaeEvent, time_horizon: SaeTime) -> Option<SaeEvent> {
-    let res = self.store.add_and_match_feature(new_evt, time_horizon);
-    res
+  /// add the given feature to the store, and attempt to match it against other stored features
+  fn track_feature(&mut self, new_evt: &SaeEvent) -> Option<SaeEvent> {
+    let time_horizon: SaeTime = new_evt.timestamp.max(self.time_window) - self.time_window;
+    self.store.add_and_match_feature(new_evt, time_horizon)
   }
-
-
 
   /// Render a representation of the SAE to a file
   pub fn render_sae_frame_to_file(&self,  time_horizon: SaeTime, out_path: &str ) {
@@ -93,22 +127,7 @@ impl FeatureTracker {
 
   /// Render a representation of the SAE with the given cutoff time horizon
   pub fn render_sae_frame(&self,  time_horizon: SaeTime) -> RgbImage {
-    let mut out_img =   RgbImage::new(self.n_pixel_cols, self.n_pixel_rows);
-
-    //first find maximum values of SAE
-    let mut max_rise_timestamp:SaeTime = 0;
-    let mut max_fall_timestamp:SaeTime = 0;
-
-    for row in 0..self.n_pixel_rows {
-      for col in 0..self.n_pixel_cols {
-        let sae_rise_val: SaeTime = self.sae_rise[(row as usize, col as usize)];
-        if sae_rise_val > max_rise_timestamp { max_rise_timestamp = sae_rise_val;}
-        let sae_fall_val: SaeTime = self.sae_fall[(row as usize, col as usize)];
-        if sae_fall_val > max_fall_timestamp { max_fall_timestamp = sae_fall_val;}
-      }
-    }
-
-    let max_global_timestamp = max_rise_timestamp.max(max_fall_timestamp);
+    let mut out_img = RgbImage::new(self.n_pixel_cols, self.n_pixel_rows);
 
     for row in 0..self.n_pixel_rows {
       for col in 0..self.n_pixel_cols {
@@ -116,40 +135,67 @@ impl FeatureTracker {
         let sae_fall_val: SaeTime = self.sae_fall[(row as usize, col as usize)];
         let sae_val = sae_rise_val.max(sae_fall_val);
 
-        let sae_pix_frac = (sae_val as f32) / (max_global_timestamp as f32); // <= 1.0
-
-        if 0 != sae_val && sae_val > time_horizon {
-          let blue_val = 0;
-          let total_val = (sae_fall_val + sae_rise_val) as f32;
-          let red_val: u8 = ((255.0 * sae_pix_frac )* (sae_rise_val as f32) / total_val) as u8;
-          let green_val: u8 = ((255.0 * sae_pix_frac) * (sae_fall_val as f32) / total_val) as u8;
-
-          let px_data: [u8; 3] = [red_val, green_val, blue_val];
+        if 0 != sae_val && sae_val >= time_horizon {
+          //let total_val = (sae_fall_val + sae_rise_val) as f32;
+          //let red_val: u8 = (255.0 * (sae_rise_val as f32) / total_val) as u8;
+          //let green_val: u8 = (255.0  * (sae_fall_val as f32) / total_val) as u8;
+          let lum:u8 = 255; //(255.0 * sae_pix_frac ) as u8;
+          let red_val:u8 =  if sae_rise_val > sae_fall_val { lum } else {0};
+          let green_val: u8 = if sae_fall_val > sae_rise_val  { lum } else {0};
+          let px_data: [u8; 3] = [red_val, green_val, 0];
           let px = image::Rgb(px_data);
 
           out_img.put_pixel(col as u32, row as u32, px);
         }
+
       }
     }
-
 
     out_img
   }
 
-  pub const RED_PIXEL: [u8; 3] = [255u8, 0, 0];
-  pub const GREEN_PIXEL: [u8; 3] = [0, 255u8, 0];
-  pub const YELLOW_PIXEL: [u8; 3] = [255u8, 255u8, 0];
-  pub const BLUE_PIXEL: [u8; 3] = [0,0,  255u8];
+
+  /// generate a color fingerprint for a descriptor
+  fn color_for_descriptor(desc: NormDescriptor) -> [u8; 3] {
+    let split_count = (NORM_DESCRIPTOR_LEN / 3) as f32;
+
+    let mut hue_acc = 0.0;
+    let mut sat_acc = 0.0;
+    let mut val_acc = 0.0;
+
+    for i in (0..NORM_DESCRIPTOR_LEN).step_by(3) {
+      hue_acc += desc[i];
+      sat_acc += desc[i+1];
+      val_acc += desc[i+2];
+    }
+
+    let hue_val = 360.0 * (hue_acc / split_count);
+    let saturation_val = sat_acc  / split_count;
+    let value_val = val_acc / split_count;
+
+    let hsv_color =  palette::Hsv::new(hue_val, saturation_val, value_val);
+    let rgb_color:palette::rgb::Rgb = hsv_color.into();
+
+    //println!("color: {:?}", rgb_color);
+
+    let red_val = (rgb_color.red * 255.0) as u8;
+    let green_val = (rgb_color.green * 255.0) as u8;
+    let blue_val = (rgb_color.blue * 255.0) as u8;
+
+    [red_val, green_val, blue_val]
+  }
 
 
-  /// render all tracks into an image
+
+
+    /// render all tracks into an image
   pub fn render_tracks(&self, time_horizon: SaeTime) -> RgbImage {
     let nrows = self.n_pixel_rows;
     let ncols = self.n_pixel_cols;
     let mut out_img =   RgbImage::new(ncols , nrows);
 
     // collect the list of tracks to render
-    let chains_list: Vec<Vec<((f32, f32), (f32, f32))>> =
+    let chains_list: Vec<ChainContainer> =
       (0..nrows * ncols).fold(vec!(), |mut acc, idx| {
         let row: u16 = (idx / ncols) as u16;
         let col: u16 = (idx % ncols) as u16;
@@ -157,23 +203,34 @@ impl FeatureTracker {
         if chain.len() > 4 { //TODO arbitrary cutoff
           //add all events in the chain that are after the time horizon
           let mut chain_vec: Vec<((f32, f32), (f32, f32))> = Vec::with_capacity(chain.len());
+          let mut sample_desc: NormDescriptor = [0.0; NORM_DESCRIPTOR_LEN];
+
           for i in 0..(chain.len() - 1) {
             let evt = &chain[i];
             let old_evt = &chain[i + 1];
+
+            if 0 == i {
+              sample_desc.copy_from_slice(&*evt.norm_descriptor.clone().unwrap() );
+            }
+
             let pair = ((evt.col as f32, evt.row as f32), (old_evt.col as f32, old_evt.row as f32));
             chain_vec.push(pair);
           }
-          acc.push(chain_vec);
+
+          acc.push(  ChainContainer {
+            chain: chain_vec,
+            color: Self::color_for_descriptor(sample_desc),
+            });
         }
         acc
       });
 
 
     //draw each chain in its own color
-    for (i, chain) in chains_list.iter().enumerate() {
-      let rgb_data = FeatureTracker::RAINBOW_WHEEL_GEN[(i as usize) % FeatureTracker::RAINBOW_WHEEL_DIM];
-      let px = image::Rgb(rgb_data);
-      for segment in chain {
+    for chain_container in chains_list.iter() {
+      let px = image::Rgb(chain_container.color);
+
+      for segment in chain_container.chain.iter() {
         drawing::draw_line_segment_mut(&mut out_img, segment.0, segment.1, px);
       }
     }
@@ -211,6 +268,7 @@ impl FeatureTracker {
     out_img.save(out_path).expect("Couldn't save");
   }
 
+  /// render events as corners to an image result
   pub fn render_corners(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3] ) -> RgbImage {
     let mut out_img =   RgbImage::new(self.n_pixel_cols , self.n_pixel_rows);
 
@@ -227,6 +285,7 @@ impl FeatureTracker {
     out_img
   }
 
+  /// render events as corners to a file
   pub fn render_corners_to_file(&self, events: &Vec<SaeEvent>, rising_pix:&[u8;3], falling_pix:&[u8;3], out_path: &str ) {
     let out_img = self.render_corners(events, rising_pix, falling_pix);
     out_img.save(out_path).expect("Couldn't save");
@@ -295,7 +354,7 @@ const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
   /// Generate a series of synthetic events for stimulating the tracker
   pub fn process_synthetic_events(img_w: u32, img_h: u32, render_out: bool) {
     const TMAX_FORGETTING_TIME: SaeTime = (0.1 / 1E-6) as SaeTime;
-    let mut tracker = Box::new(FeatureTracker::new(img_w, img_h, TMAX_FORGETTING_TIME));
+    let mut tracker = Box::new(FeatureTracker::new(img_w, img_h, TMAX_FORGETTING_TIME, 0));
     let mut timestamp: SaeTime = 1;
 
     let spacer = (2 * slab::MAX_RL_SPATIAL_DISTANCE) as i32;
@@ -359,13 +418,13 @@ const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
 
 
 
-#[cfg(test)]
-mod tests {
-  use super::*;
-  use std::fs::create_dir_all;
-  use std::path::Path;
-
-
+//#[cfg(test)]
+//mod tests {
+//  use super::*;
+//  use std::fs::create_dir_all;
+//  use std::path::Path;
+//
+//
 //  #[test]
 //  fn test_synthetic_worm_race() {
 //    let img_w = 320;
@@ -373,4 +432,4 @@ mod tests {
 //    create_dir_all(Path::new("./out/")).expect("Couldn't create output dir");
 //    FeatureTracker::process_synthetic_events(img_w, img_h, true);
 //  }
-}
+//}

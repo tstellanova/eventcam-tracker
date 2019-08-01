@@ -148,7 +148,7 @@ impl SlabStore {
   /// Return the best matching parent cell or none
   fn find_best_parent_cell(&self, evt: &SaeEvent, time_horizon: SaeTime) -> Option<FeatureLocator> {
     let (leaf_neighbors, nonleaf_neighbors) = self.collect_neighbors(evt, time_horizon);
-    println!("leaf_neighbors {} nonleaf_neighbors {}", leaf_neighbors.len(), nonleaf_neighbors.len());
+//    println!("leaf_neighbors {} nonleaf_neighbors {}", leaf_neighbors.len(), nonleaf_neighbors.len());
 
     let mut best_parent_opt:Option<FeatureLocator> =
       Self::find_closest_and_freshest_neighbor(evt, &leaf_neighbors);
@@ -452,7 +452,7 @@ mod tests {
   fn test_likeness_feature_matching() {
     let mut store = SlabStore::new();
     let mut node1 = generate_test_event();
-    let mut time_horizon: SaeTime = 0;
+    let time_horizon: SaeTime = 0;
     node1.timestamp = 100;
     node1.row = 320;
     node1.col = 320;
@@ -460,11 +460,6 @@ mod tests {
     store.push_feature_to_slab(&node1, None, time_horizon);
     let chain = store.chain_for_point(node1.row, node1.col, time_horizon);
     assert_eq!(chain.len(), 1);
-
-    let parent_loc:FeatureLocator = FeatureLocator {
-      cell_id: (node1.row as usize, node1.col as usize),
-      event: node1.clone(),
-    };
 
     let mut node2 = generate_test_event_with_desc(&[0.7f32; NORM_DESCRIPTOR_LEN]);
     node2.timestamp = 200;
