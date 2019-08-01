@@ -10,12 +10,13 @@ arrayvec = "0.4.10"
 nalgebra = "0.18.0"
 imageproc = "0.18.0"
 image = "0.21.1"
+palette = "0.4.1"
 rand = "0.6.5"
 
 
 [dependencies.arcstar]
-#path = "../arcstar"
-git = "https://github.com/tstellanova/arcstar"
+path = "../arcstar"
+#git = "https://github.com/tstellanova/arcstar"
 
 
 [dev-dependencies]
