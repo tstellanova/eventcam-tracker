@@ -1,6 +1,7 @@
 
 use arcstar::sae_types::*;
 use arrayvec::ArrayVec;
+use rand::{Rng};
 
 
 //TODO move some of these constants to a configuration file?
@@ -16,16 +17,43 @@ const MAX_PATCH_NEIGHBORS: usize = (PATCH_SQUARE_DIM*PATCH_SQUARE_DIM) - 1;
 const MAX_PIXEL_DIM: usize = 1024;
 
 /// maximum "tree depth", similar to "ρmax"/"ρthresh" from ACE tracker paper
-pub const SLAB_DEPTH: usize = 5;
+const TREE_DEPTH: usize = 5;
 
 
 /// a slab is Surface of Active Events with historical depth
-type SlabCell =  ArrayVec<[SaeEvent;SLAB_DEPTH]>;
+type FeatureChain =  ArrayVec<[SaeEvent; TREE_DEPTH]>;
 type SlabRow = ArrayVec<[SlabCell; MAX_PIXEL_DIM]>;
 type SlabMatrix = Vec<SlabRow>;
 
 /// row, column for cell in slab
 type SlabCellId = (usize, usize);
+
+
+#[derive( Clone, Debug, PartialEq)]
+pub struct FeatureTrack {
+  /// stores a chain of features in the track
+  pub chain: FeatureChain,
+  /// a color used for visually representing this track
+  pub color: [u8; 3],
+}
+
+type SlabCell = FeatureTrack;
+
+impl std::default::Default for FeatureTrack {
+  fn default() -> Self {
+    FeatureTrack {
+      chain: Default::default(),
+      color: [0; 3],
+    }
+  }
+}
+
+impl FeatureTrack {
+  pub fn new() -> Self {
+    Self::default()
+  }
+}
+
 
 #[derive( Clone, Debug, PartialEq)]
 pub struct FeatureLocator {
@@ -67,20 +95,27 @@ impl SlabStore {
     inst
   }
 
-  /// get the chain of events in this cell that are fresher than the time horizon given
-  pub fn chain_for_point(&self, row: u16, col: u16, time_horizon: SaeTime) -> Vec<SaeEvent> {
-    let mut res:Vec<SaeEvent> = vec!();
-    let cell = &self.mx[row as usize][col as usize];
-    for item in cell {
-      if item.timestamp >= time_horizon {
-        res.push(item.clone());
+  /// Get a track of features for a given location, iff they're fresher than the time horizon
+  pub fn track_for_point(&self, row: u16, col: u16, time_horizon: SaeTime) -> Option<FeatureTrack> {
+
+    let slab_cell: &SlabCell = &self.mx[row as usize][col as usize];
+
+    if slab_cell.chain.len() > 1 &&
+      slab_cell.chain[0].timestamp > time_horizon   {
+      let mut track: FeatureTrack = FeatureTrack::new();
+      track.color = slab_cell.color;
+
+      for feature in slab_cell.chain.iter() {
+        if feature.timestamp >= time_horizon {
+          track.chain.push(feature.clone());
+        }
+        else { break;} //no more fresh features
       }
-      else {
-        break;
-      }
+
+      return Some(track)
     }
 
-    res
+    None
   }
 
 
@@ -180,10 +215,10 @@ impl SlabStore {
 
       //println!("{} ( {}, {} ) ... [{}, {}]", _i, x, y, row, col);
       let cell = &self.mx[row][col];
-      let cell_len = cell.len();
+      let cell_len = cell.chain.len();
       if cell_len > 0 {
-        if cell.len() == 1 {
-          let node = &cell[0];
+        if cell.chain.len() == 1 {
+          let node = &cell.chain[0];
           if node.timestamp >= time_horizon &&
             node.timestamp < evt.timestamp  //assume that evt is the freshest
           {
@@ -195,7 +230,7 @@ impl SlabStore {
         }
         else {
           //roll up all the kids in the cell
-          for node in cell {
+          for node in cell.chain.iter() {
             if node.timestamp >= time_horizon {
               nonleaf_neighbors.push(FeatureLocator {
                 cell_id: slab_cell_id,
@@ -224,7 +259,8 @@ impl SlabStore {
   /// insert a feature in the slab
   fn push_feature_to_slab(&mut self, evt: &SaeEvent, parent_opt: Option<FeatureLocator>, time_horizon: SaeTime) {
     let mut out_cell:SlabCell = SlabCell::new();
-    out_cell.push(evt.clone());
+    out_cell.chain.push(evt.clone());
+    out_cell.color = rand::thread_rng().gen::<[u8;3]>();
 
     if parent_opt.is_some() {
       let parent_loc = parent_opt.unwrap();
@@ -233,16 +269,16 @@ impl SlabStore {
       //copy over the chain from the matched cell,
       //starting from the actual parent event!
       let in_cell:&mut SlabCell = &mut self.mx[match_cell_id.0][match_cell_id.1];
-      let parent_is_leaf = in_cell.len() == 1;
+      let parent_is_leaf = in_cell.chain.len() == 1;
 
       //since we've already inserted the freshest event, need to ensure
       //we don't overflow the cell
-      let max_idx = in_cell.len().min(SLAB_DEPTH-1);
+      let max_idx = in_cell.chain.len().min(TREE_DEPTH -1);
 
       let mut copy_started = false;
       //copy over the older chain of events from the parent chain
       for i in 0..max_idx  {
-        let prev_evt = &in_cell[i];
+        let prev_evt = &in_cell.chain[i];
         if !copy_started {
           //wait until we see the actual parent event before starting to copy
           if (prev_evt.timestamp == parent_evt.timestamp) &&
@@ -254,7 +290,7 @@ impl SlabStore {
 
         if copy_started {
           if prev_evt.timestamp >= time_horizon {
-            out_cell.push(prev_evt.clone());
+            out_cell.chain.push(prev_evt.clone());
           }
           else {
             //the chain contains a stale event -- stop following the chain
@@ -266,7 +302,10 @@ impl SlabStore {
       // if the matched cell is a leaf, also push the new event there
       //TODO add unit test for this odd double-insert of the new event in the slab
       if parent_is_leaf {
-        in_cell.insert(0, evt.clone());
+        in_cell.chain.insert(0, evt.clone());
+      }
+      else {
+        out_cell.color = in_cell.color;
       }
     }
 
@@ -358,8 +397,9 @@ mod tests {
 
     assert_eq!(true, prior_node.is_some());
     let last_evt = prior_node.unwrap();
-    let chain = store.chain_for_point(last_evt.row, last_evt.col, time_horizon);
-    assert_eq!(chain.len(), SLAB_DEPTH);
+    let track_opt = store.track_for_point(last_evt.row, last_evt.col, time_horizon);
+    assert_eq!(track_opt.is_some(), true);
+    assert_eq!(track_opt.unwrap().chain.len(), TREE_DEPTH);
   }
 
   #[test]
@@ -391,7 +431,9 @@ mod tests {
     assert_eq!(check3.unwrap().timestamp, node2.timestamp);
 
     //verify chain is correct
-    let chain = store.chain_for_point(node3.row, node3.col, time_horizon);
+    let track_opt = store.track_for_point(node3.row, node3.col, time_horizon);
+    assert_eq!(track_opt.is_some(), true);
+    let chain = track_opt.unwrap().chain;
     assert_eq!(true,  chain.len() == 2);
     assert_eq!(chain[0].timestamp, node3.timestamp);
     assert_eq!(chain[1].timestamp, node2.timestamp);
@@ -408,8 +450,8 @@ mod tests {
     node1.row = 320;
     node1.col = 320;
     store.push_feature_to_slab(&node1, None, time_horizon);
-    let chain = store.chain_for_point(node1.row, node1.col, time_horizon);
-    assert_eq!(chain.len(), 1);
+    let track_opt = store.track_for_point(node1.row, node1.col, time_horizon);
+    assert_eq!(track_opt.is_none(), true);//no "track", just a single feature
 
     let parent_loc:FeatureLocator = FeatureLocator {
       cell_id: (node1.row as usize, node1.col as usize),
@@ -420,8 +462,8 @@ mod tests {
     node2.timestamp = 200;
     store.push_feature_to_slab(&node2, Some(parent_loc), time_horizon);
     //verify that node2 is part of a chain of events including node1
-    let chain = store.chain_for_point(node2.row, node2.col, time_horizon);
-    assert_eq!(chain.len(), 2);
+    let track_opt = store.track_for_point(node2.row, node2.col, time_horizon);
+    assert_eq!(track_opt.unwrap().chain.len(), 2);
 
     //add a new spatially close feature that should attach to the existing chain
     let mut node3 = node1.clone();
@@ -431,8 +473,8 @@ mod tests {
     assert_eq!(parent_opt.is_some(), true);
     assert_eq!(parent_opt.unwrap().timestamp, node2.timestamp);
 
-    let chain = store.chain_for_point(node3.row, node3.col, time_horizon);
-    assert_eq!(chain.len(), 3);
+    let track_opt = store.track_for_point(node3.row, node3.col, time_horizon);
+    assert_eq!(track_opt.unwrap().chain.len(), 3);
 
     //add another feature that is nearby but is much newer
     let mut node4 = node1.clone();
@@ -441,10 +483,11 @@ mod tests {
     time_horizon = 200; //this should cause node1 to be ignored in chain result
     let parent_opt = store.add_and_match_feature(&node4, time_horizon);
     assert_eq!(parent_opt.is_some(), true);
-    let chain = store.chain_for_point(node4.row, node4.col, time_horizon);
+    let track_opt = store.track_for_point(node4.row, node4.col, time_horizon);
+    assert_eq!(track_opt.is_some(), true);
+    let chain = track_opt.unwrap().chain;
     assert_eq!(chain.len(), 3); // 4, 3, 2
-
-    assert_eq!(  chain[0].timestamp, node4.timestamp);
+    assert_eq!(chain[0].timestamp, node4.timestamp);
 
   }
 
@@ -458,8 +501,8 @@ mod tests {
     node1.col = 320;
 
     store.push_feature_to_slab(&node1, None, time_horizon);
-    let chain = store.chain_for_point(node1.row, node1.col, time_horizon);
-    assert_eq!(chain.len(), 1);
+    let track_opt = store.track_for_point(node1.row, node1.col, time_horizon);
+    assert_eq!(track_opt.is_none(), true); //there's no "chain" just a single feature
 
     let mut node2 = generate_test_event_with_desc(&[0.7f32; NORM_DESCRIPTOR_LEN]);
     node2.timestamp = 200;
@@ -473,6 +516,7 @@ mod tests {
     node3.col = 321; //move slightly, max distance limited by PATCH_SQUARE_DIM
     node3.timestamp = 300;
 
+    //this node is same distance from both node1 and node2, but should likeness-match with node1
     let parent_opt = store.add_and_match_feature(&node3, time_horizon);
     assert_eq!(parent_opt.is_some(), true);
     assert_eq!(parent_opt.unwrap().timestamp, node1.timestamp);
