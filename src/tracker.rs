@@ -156,34 +156,34 @@ impl FeatureTracker {
 
 
   /// generate a color fingerprint for a descriptor
-  fn color_for_descriptor(desc: NormDescriptor) -> [u8; 3] {
-    let split_count = (NORM_DESCRIPTOR_LEN / 3) as f32;
-
-    let mut hue_acc = 0.0;
-    let mut sat_acc = 0.0;
-    let mut val_acc = 0.0;
-
-    for i in (0..NORM_DESCRIPTOR_LEN).step_by(3) {
-      hue_acc += desc[i];
-      sat_acc += desc[i+1];
-      val_acc += desc[i+2];
-    }
-
-    let hue_val = 360.0 * (hue_acc / split_count);
-    let saturation_val = sat_acc  / split_count;
-    let value_val = val_acc / split_count;
-
-    let hsv_color =  palette::Hsv::new(hue_val, saturation_val, value_val);
-    let rgb_color:palette::rgb::Rgb = hsv_color.into();
-
-    //println!("color: {:?}", rgb_color);
-
-    let red_val = (rgb_color.red * 255.0) as u8;
-    let green_val = (rgb_color.green * 255.0) as u8;
-    let blue_val = (rgb_color.blue * 255.0) as u8;
-
-    [red_val, green_val, blue_val]
-  }
+//  fn color_for_descriptor(desc: NormDescriptor) -> [u8; 3] {
+//    let split_count = (NORM_DESCRIPTOR_LEN / 3) as f32;
+//
+//    let mut hue_acc = 0.0;
+//    let mut sat_acc = 0.0;
+//    let mut val_acc = 0.0;
+//
+//    for i in (0..NORM_DESCRIPTOR_LEN).step_by(3) {
+//      hue_acc += desc[i];
+//      sat_acc += desc[i+1];
+//      val_acc += desc[i+2];
+//    }
+//
+//    let hue_val = 360.0 * (hue_acc / split_count);
+//    let saturation_val = sat_acc  / split_count;
+//    let value_val = val_acc / split_count;
+//
+//    let hsv_color =  palette::Hsv::new(hue_val, saturation_val, value_val);
+//    let rgb_color:palette::rgb::Rgb = hsv_color.into();
+//
+//    //println!("color: {:?}", rgb_color);
+//
+//    let red_val = (rgb_color.red * 255.0) as u8;
+//    let green_val = (rgb_color.green * 255.0) as u8;
+//    let blue_val = (rgb_color.blue * 255.0) as u8;
+//
+//    [red_val, green_val, blue_val]
+//  }
 
 
 
@@ -199,28 +199,29 @@ impl FeatureTracker {
       (0..nrows * ncols).fold(vec!(), |mut acc, idx| {
         let row: u16 = (idx / ncols) as u16;
         let col: u16 = (idx % ncols) as u16;
-        let chain = self.store.chain_for_point(row, col, time_horizon);
-        if chain.len() > 4 { //TODO arbitrary cutoff
-          //add all events in the chain that are after the time horizon
-          let mut chain_vec: Vec<((f32, f32), (f32, f32))> = Vec::with_capacity(chain.len());
-          let mut sample_desc: NormDescriptor = [0.0; NORM_DESCRIPTOR_LEN];
+        if let Some(track) = self.store.track_for_point(row, col, time_horizon) {
+          if track.chain.len() > 4 { //TODO arbitrary cutoff
+            //add all events in the chain that are after the time horizon
+            let mut chain_vec: Vec<((f32, f32), (f32, f32))> = Vec::with_capacity(track.chain.len());
+            let mut sample_desc: NormDescriptor = [0.0; NORM_DESCRIPTOR_LEN];
 
-          for i in 0..(chain.len() - 1) {
-            let evt = &chain[i];
-            let old_evt = &chain[i + 1];
+            for i in 0..(track.chain.len() - 1) {
+              let evt = &track.chain[i];
+              let old_evt = &track.chain[i + 1];
 
-            if 0 == i {
-              sample_desc.copy_from_slice(&*evt.norm_descriptor.clone().unwrap() );
+              if 0 == i {
+                sample_desc.copy_from_slice(&*evt.norm_descriptor.clone().unwrap());
+              }
+
+              let pair = ((evt.col as f32, evt.row as f32), (old_evt.col as f32, old_evt.row as f32));
+              chain_vec.push(pair);
             }
 
-            let pair = ((evt.col as f32, evt.row as f32), (old_evt.col as f32, old_evt.row as f32));
-            chain_vec.push(pair);
-          }
-
-          acc.push(  ChainContainer {
-            chain: chain_vec,
-            color: Self::color_for_descriptor(sample_desc),
+            acc.push(ChainContainer {
+              chain: chain_vec,
+              color: track.color,
             });
+          }
         }
         acc
       });
