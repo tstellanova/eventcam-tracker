@@ -281,36 +281,6 @@ mod tests {
   use super::*;
   use std::fs::create_dir_all;
   use std::path::Path;
-  use rand::Rng;
-
-//  squiggle that triggers the corner detector, but not clear what this corresponds to IRL
-  const SAMPLE_CORNER_DIM: usize = 8;
-  const SAMPLE_CORNER_GEN: [[i32; 2]; SAMPLE_CORNER_DIM] = [
-    [1, -4], [2, -3], [3, -2], [4, -1],
-    [1, -3], [2, -2], [3, -1],
-    [0, 0]
-  ];
-
-//  //true corner L
-//  const SAMPLE_CORNER_DIM: usize = 10;
-//  const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
-//    [4, 0], [3,0], [2,0], [1,0],
-//    [1,-1],
-//    [0, -4], [0, -3], [0, -2], [0, -1],
-//    [0, 0]
-//  ];
-
-//  //glider
-//const SAMPLE_CORNER_DIM: usize = 7;
-//const SAMPLE_CORNER_GEN: [[i32; 2]; Self::SAMPLE_CORNER_DIM] = [
-//  [3, 3], [3, -3],
-//  [2, 2], [2 , -2],
-//  [1, 1], [1, -1],
-//  [0, 0],
-//
-//];
-
-
 
   pub fn insert_synth_feature(tracker: &mut Box<FeatureTracker>,
                               row: i32, col: i32,
@@ -331,39 +301,12 @@ mod tests {
     parent_opt
   }
 
-    /// Insert a synthetic event at the given position:
-  /// append the synthesized event to the modified event list
-  pub fn insert_one_synth_event(ctr_row: i32, ctr_col: i32, timestamp: &mut SaeTime, polarity: u8, desc_val: f32,  event_list: &mut Vec<SaeEvent> ) {
-    for j in 0..SAMPLE_CORNER_DIM {
-      *timestamp += SYNTH_TIME_INCR;
-      let dxy = SAMPLE_CORNER_GEN[j];
-      let evt_row = ctr_row + dxy[1];
-      let evt_col = ctr_col + dxy[0];
-
-      let mut rng = rand::thread_rng();
-      let mut ndesc:NormDescriptor = [desc_val; NORM_DESCRIPTOR_LEN];
-
-      for i in 0..ndesc.len() {
-        ndesc[i] = rng.gen::<f32>();
-      }
-
-      let evt = SaeEvent {
-        row: evt_row as u16,
-        col: evt_col as u16,
-        polarity: polarity,
-        timestamp: *timestamp,
-        norm_descriptor: Some(Box::new(ndesc)),
-      };
-
-      event_list.push(evt);
-    }
-  }
 
   const TIMESCALE: f64 = 1E-6; // 1 microsecond per SaeTick
-  const SYNTH_TIME_INCR:SaeTime = 10;
+  const SYNTH_TIME_INCR:SaeTime = 10; // ticks between synthetic features
 
   /// Generate a series of synthetic events for stimulating the tracker
-  pub fn process_worm_race_events(img_w: u32, img_h: u32, render_out: bool) {
+  pub fn process_worm_race_features(img_w: u32, img_h: u32, render_out: bool) {
     let time_window = (0.1 / TIMESCALE) as SaeTime; //0.1 second
     let ref_time_filter = 0; //(50E-3 / TIMESCALE) as SaeTime; //50ms
 
@@ -384,28 +327,26 @@ mod tests {
     let half_width: i32 = (img_w / 2) as i32;
     let total_frames = half_width / COL_DECR;
 
-    let max_time_delta: SaeTime = 24 * (SYNTH_TIME_INCR * SAMPLE_CORNER_DIM as u32);
+    let max_time_delta: SaeTime = 20 * SYNTH_TIME_INCR ;
 
     for _i in 0..total_frames {
       chunk_count += 1;
 
       insert_synth_feature(&mut tracker,ctr_row - row_gap, ctr_col, &mut timestamp, 0, 0.2);
-//      insert_synth_feature(&mut tracker, ctr_row, ctr_col,  &mut timestamp, 0, 0.4);
-//      insert_synth_feature(&mut tracker,ctr_row + row_gap, ctr_col, &mut timestamp, 0, 0.6);
-//
-//      insert_synth_feature(&mut tracker,ctr_row - row_gap, ctr_col - col_gap,  &mut timestamp, 1, 0.2);
-//      insert_synth_feature(&mut tracker,ctr_row, ctr_col - col_gap, &mut timestamp, 1, 0.4);
-//      insert_synth_feature(&mut tracker,ctr_row + row_gap, ctr_col - col_gap, &mut timestamp, 1, 0.6);
-      
+      insert_synth_feature(&mut tracker, ctr_row, ctr_col,  &mut timestamp, 0, 0.4);
+      insert_synth_feature(&mut tracker,ctr_row + row_gap, ctr_col, &mut timestamp, 0, 0.6);
+
+      insert_synth_feature(&mut tracker,ctr_row - row_gap, ctr_col - col_gap,  &mut timestamp, 1, 0.2);
+      insert_synth_feature(&mut tracker,ctr_row, ctr_col - col_gap, &mut timestamp, 1, 0.4);
+      insert_synth_feature(&mut tracker,ctr_row + row_gap, ctr_col - col_gap, &mut timestamp, 1, 0.6);
 
       let horizon = timestamp.max( max_time_delta) - max_time_delta;
-//      let corners = tracker.process_events( &event_list);
       let tracks = tracker.collect_tracks(2, horizon);
       println!("chunk {} tracks_len: {}", chunk_count, tracks.len());
-      //TODO fix track movement
-//      if chunk_count > 3 {
-//        assert_eq!(tracks.len(), 6);
-//      }
+
+      if chunk_count > 2 {
+        assert_eq!(tracks.len(), 6);
+      }
 
       if render_out {
         let out_path= format!("./out/sae_tracks_{:04}.png", chunk_count);
@@ -416,12 +357,11 @@ mod tests {
     }
   }
 
-
   #[test]
   fn test_synthetic_worm_race() {
     let img_w = 160;
     let img_h = 160;
     create_dir_all(Path::new("./out/")).expect("Couldn't create output dir");
-    process_worm_race_events(img_w, img_h, false);
+    process_worm_race_features(img_w, img_h, true);
   }
 }
