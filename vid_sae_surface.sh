@@ -7,7 +7,7 @@ rm sae_surface.mp4
 ffmpeg -r 24 \
  -f image2 \
  -start_number 1 \
- -i ./out/saesurf_%04d.png \
+ -i ./out/sae_surf_%04d.png \
  -vcodec libx264 \
  -crf 25 \
  -pix_fmt yuv420p \

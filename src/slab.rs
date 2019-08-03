@@ -256,11 +256,23 @@ impl SlabStore {
   }
 
 
+  /// generate a fully saturated color for visualizing tracks
+  fn generate_track_color() -> [u8; 3] {
+    let hue_val = 360.0 *  rand::thread_rng().gen::<f32>();
+    let hsv_color =  palette::Hsv::new(hue_val, 1.0, 1.0);
+    let rgb_color:palette::rgb::Rgb = hsv_color.into();
+    let red_val = (rgb_color.red * 255.0) as u8;
+    let green_val = (rgb_color.green * 255.0) as u8;
+    let blue_val = (rgb_color.blue * 255.0) as u8;
+
+    [red_val, green_val, blue_val]
+  }
+
   /// insert a feature in the slab
   fn push_feature_to_slab(&mut self, evt: &SaeEvent, parent_opt: Option<FeatureLocator>, time_horizon: SaeTime) {
     let mut out_cell:SlabCell = SlabCell::new();
     out_cell.chain.push(evt.clone());
-    out_cell.color = rand::thread_rng().gen::<[u8;3]>();
+    out_cell.color = Self::generate_track_color();
 
     if parent_opt.is_some() {
       let parent_loc = parent_opt.unwrap();
@@ -269,7 +281,6 @@ impl SlabStore {
       //copy over the chain from the matched cell,
       //starting from the actual parent event!
       let in_cell:&mut SlabCell = &mut self.mx[match_cell_id.0][match_cell_id.1];
-      let parent_is_leaf = in_cell.chain.len() == 1;
 
       //since we've already inserted the freshest event, need to ensure
       //we don't overflow the cell
@@ -299,14 +310,10 @@ impl SlabStore {
         }
       }
 
-      // if the matched cell is a leaf, also push the new event there
-      //TODO add unit test for this odd double-insert of the new event in the slab
-      if parent_is_leaf {
-        in_cell.chain.insert(0, evt.clone());
-      }
-      else {
-        out_cell.color = in_cell.color;
-      }
+      out_cell.color = in_cell.color;
+
+      //clear out the old cell
+      in_cell.chain.clear();
     }
 
     self.mx[evt.row as usize][evt.col as usize] = out_cell;
